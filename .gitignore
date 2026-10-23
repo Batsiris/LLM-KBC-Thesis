@@ -1,0 +1,51 @@
+# Python caches and test tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+
+# Downloaded datasets and generated results (keep placeholders)
+data/*
+!data/.gitkeep
+results/*
+!results/.gitkeep
+
+# Model downloads, caches, and weights
+models/
+weights/
+checkpoints/
+.cache/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+*.h5
+*.hdf5

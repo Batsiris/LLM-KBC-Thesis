@@ -63,7 +63,23 @@ records are unlabeled**: their withheld placeholders are reported separately, an
 test gold-object distributions and empty gold-answer counts are unavailable.
 The split name determines this policy; empty lists alone do not imply negatives.
 
-Run the test suite after installation:
+Evaluate an existing prediction file using the official LM-KBC 2026 protocol:
+
+```sh
+python -m pip install -e ".[dev,evaluation]"
+python -m llm_kbc.evaluation --benchmark lm-kbc-2026 --split val --data-dir data/lm_kbc_2026 --predictions results/predictions.jsonl
+```
+
+Evaluation accepts explicit `train` or `val` gold selection only; public test
+labels are withheld. Predictions use a flat list of strings, unlike nested gold
+alias lists. The CLI emits full-precision JSON with overall/per-relation macro
+and micro metrics and provenance. See [evaluation protocols](docs/evaluation.md)
+for the pinned upstream source, Apache-2.0 license, exact metric definitions,
+known edge cases, and adapter architecture. Metrics from different benchmarks
+may have different matching and aggregation semantics and must not be directly
+compared without qualification.
+
+Run the complete test suite with both `dev` and `evaluation` extras installed:
 
 ```sh
 python -m pytest
@@ -71,9 +87,11 @@ python -m pytest
 
 ## Current status
 
-The project scaffold, minimal CLI, read-only dataset inspector, and synthetic
-tests are implemented. LM-KBC 2026 dataset files are available locally; the
-inspector uses no model, external API, or additional runtime dependency.
+The project scaffold, minimal CLI, read-only dataset inspector, official LM-KBC
+2026 evaluation adapter, and synthetic tests are implemented. LM-KBC 2026 dataset
+files are available locally. Evaluation consumes supplied predictions and does
+not generate answers or orchestrate experiments. The inspector uses no model,
+external API, or additional runtime dependency.
 **No baseline or experiment has been run.** No ML baseline is implemented.
 
 Planned experiments include zero-shot, few-shot, and relation-aware prompting;
@@ -83,12 +101,15 @@ validation. These are research directions, not implemented features.
 
 ## Layout
 
-- `src/llm_kbc/`: Python package, CLI, and dataset inspector.
-- `tests/`: CLI smoke test and synthetic dataset-inspection tests.
+- `src/llm_kbc/`: package, inspector, prediction parser, and evaluation interface/CLI.
+- `src/llm_kbc/_vendor/`: unchanged upstream evaluator with license and provenance.
+- `tests/`: smoke, dataset-inspection, and evaluation-protocol tests.
+- `docs/`: evaluation usage, provenance, and metric definitions.
 - `configs/`: reserved for experiment configuration.
 - `data/`: local datasets; contents are ignored by Git.
 - `results/`: reserved for generated results; contents are ignored by Git.
 
-The project uses setuptools with a `src` layout. It has no runtime dependencies;
-pytest is an optional development dependency. Dependency versions are not yet
-locked; future experiments should record their configurations and environments.
+The project uses setuptools with a `src` layout and no base runtime dependencies.
+Pytest is an optional development dependency; evaluation optionally requires
+pandas at a pinned version. Transitive dependencies are not locked; future
+experiments should record their configurations and environments.

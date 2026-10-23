@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/lm-kbc/dataset2026",
+  "commit": "e079024b809568f28cded5537203dfd52f5b04ae",
+  "license": "Apache-2.0",
+  "files": {
+    "evaluate.py": {
+      "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+      "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+      "git_blob_sha": "565ead0713aed41315ddca40d3c1f0bb37d9724c",
+      "sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22"
+    },
+    "LICENSE": {
+      "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+      "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+      "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+  },
+  "modifications": "None; upstream files preserved byte-for-byte."
+}

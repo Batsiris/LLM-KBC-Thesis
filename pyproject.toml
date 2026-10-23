@@ -12,9 +12,13 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
+evaluation = ["pandas==2.2.3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"llm_kbc._vendor.lm_kbc_2026" = ["LICENSE", "provenance.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

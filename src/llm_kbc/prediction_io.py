@@ -20,6 +20,29 @@ class PredictionRecord(TypedDict):
     ObjectEntities: list[str]
 
 
+def validate_prediction(row: object, *, location: str = "prediction") -> PredictionRecord:
+    """Validate one prediction without repairing, normalizing, or dropping values."""
+    if not isinstance(row, dict):
+        raise DatasetError(f"{location}: expected a prediction JSON object")
+    missing = [
+        key for key in ("SubjectEntity", "Relation", "ObjectEntities")
+        if key not in row
+    ]
+    if missing:
+        raise DatasetError(
+            f"{location}: missing required prediction field(s): {', '.join(missing)}"
+        )
+    for key in ("SubjectEntity", "Relation"):
+        if not isinstance(row[key], str) or not row[key].strip():
+            raise DatasetError(f"{location}: {key} must be a non-empty string")
+    objects = row["ObjectEntities"]
+    if not isinstance(objects, list) or any(not isinstance(v, str) for v in objects):
+        raise DatasetError(
+            f"{location}: prediction ObjectEntities must be a flat list of strings"
+        )
+    return cast(PredictionRecord, row)
+
+
 def load_predictions(path: str | Path) -> Iterator[PredictionRecord]:
     """Yield strict UTF-8 prediction rows with file/line context on errors.
 
@@ -38,25 +61,7 @@ def load_predictions(path: str | Path) -> Iterator[PredictionRecord]:
                     raise DatasetError(
                         f"{location}: malformed prediction JSON at column {error.colno}: {error.msg}"
                     ) from error
-                if not isinstance(row, dict):
-                    raise DatasetError(f"{location}: expected a prediction JSON object")
-                missing = [
-                    key for key in ("SubjectEntity", "Relation", "ObjectEntities")
-                    if key not in row
-                ]
-                if missing:
-                    raise DatasetError(
-                        f"{location}: missing required prediction field(s): {', '.join(missing)}"
-                    )
-                for key in ("SubjectEntity", "Relation"):
-                    if not isinstance(row[key], str) or not row[key].strip():
-                        raise DatasetError(f"{location}: {key} must be a non-empty string")
-                objects = row["ObjectEntities"]
-                if not isinstance(objects, list) or any(not isinstance(v, str) for v in objects):
-                    raise DatasetError(
-                        f"{location}: prediction ObjectEntities must be a flat list of strings"
-                    )
-                yield cast(PredictionRecord, row)
+                yield validate_prediction(row, location=location)
     except FileNotFoundError as error:
         raise DatasetError(f"{path}: prediction file not found") from error
     except UnicodeDecodeError as error:

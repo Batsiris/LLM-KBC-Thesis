@@ -62,21 +62,16 @@ def test_prompt_covers_all_six_relations_without_gold_or_examples(relation):
     assert "example" not in json.dumps(messages).lower()
 
 
-def test_prompt_relation_meanings_and_units():
-    assert set(zs.QUESTIONS) == {
-        "hasArea", "hasCapacity", "awardWonBy", "personHasCityOfDeath",
-        "countryLandBordersCountry", "companyTradesAtStockExchange",
+def test_short_v2_question_templates():
+    assert zs.PROMPT_VERSION == "lm-kbc-2026-zero-shot-v2"
+    assert zs.QUESTIONS == {
+        "countryLandBordersCountry": "Which countries share a land border with {subject}?",
+        "personHasCityOfDeath": "In which city did {subject} die?",
+        "hasCapacity": "What is the spectator capacity of {subject}?",
+        "awardWonBy": "Who has received the award {subject}?",
+        "companyTradesAtStockExchange": "On which stock exchanges is {subject} listed?",
+        "hasArea": "What is the total area of {subject} in square kilometres?",
     }
-    assert "square kilometres" in zs.QUESTIONS["hasArea"]
-    assert "land and inland water" in zs.QUESTIONS["hasArea"]
-    assert "integer number of people" in zs.QUESTIONS["hasCapacity"]
-    assert "highest published" in zs.QUESTIONS["hasCapacity"]
-    assert "living" in zs.QUESTIONS["personHasCityOfDeath"]
-    assert "maritime" in zs.QUESTIONS["countryLandBordersCountry"]
-    assert "rescinded" in zs.QUESTIONS["awardWonBy"]
-    assert "winning works" in zs.QUESTIONS["awardWonBy"]
-    assert "over-the-counter" in zs.QUESTIONS["companyTradesAtStockExchange"]
-    assert "ADR, GDR, or CDI" in zs.QUESTIONS["companyTradesAtStockExchange"]
 
 
 @pytest.mark.parametrize(("text", "expected"), [

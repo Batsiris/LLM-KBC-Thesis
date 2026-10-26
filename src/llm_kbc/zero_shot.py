@@ -24,7 +24,7 @@ from .prediction_io import validate_prediction
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 DEFAULT_REVISION = "aa8e72537993ba99e69dfaafa59ed015b17504d1"
-PROMPT_VERSION = "lm-kbc-2026-zero-shot-v1"
+PROMPT_VERSION = "lm-kbc-2026-zero-shot-v2"
 SYSTEM_PROMPT = (
     "Answer factual questions using only your existing knowledge, as of 1 July 2026. "
     "Return only a JSON array of strings, with no explanation or markdown. "
@@ -32,38 +32,14 @@ SYSTEM_PROMPT = (
     "Return an empty array when no answer is known or applicable. "
     "Express numerical answers as strings without units or grouping commas."
 )
-# Fixed relation definitions, not demonstrations or examples from labeled data.
+# Fixed short questions, without relation-specific rules or examples.
 QUESTIONS = {
-    "countryLandBordersCountry": (
-        "Which currently recognized countries or comparable territories share a land border with {subject}? "
-        "Include enclaves and borders through integral overseas territories. Exclude maritime borders, "
-        "deprecated or disputed border claims, and borders through non-integral dependencies or separate constituent countries."
-    ),
-    "personHasCityOfDeath": (
-        "In which city, or most specific publicly known locality, did {subject} die? "
-        "Give the locality rather than its country or region. Return an empty array if the person is living "
-        "or the locality is unknown."
-    ),
-    "hasCapacity": (
-        "What is the maximum spectator capacity of {subject}, as an integer number of people? "
-        "When seated, total, or historical capacities differ, use the highest published capacity."
-    ),
-    "awardWonBy": (
-        "Which recipient entities have received the specific award {subject}? "
-        "List the recipient people, groups, organizations, or projects, rather than the winning works. "
-        "Exclude rescinded recipients and recipients of distinct predecessor or successor awards."
-    ),
-    "companyTradesAtStockExchange": (
-        "On which stock exchanges are the shares of {subject} publicly traded? "
-        "Include multiple listings and exchange-traded depositary receipts (ADR, GDR, or CDI). "
-        "Exclude over-the-counter venues and listings belonging only to a subsidiary. "
-        "Return an empty array for a company that is not separately listed."
-    ),
-    "hasArea": (
-        "What is the surface area of {subject} in square kilometres? "
-        "For a country use total area, including land and inland water. Convert other area units "
-        "to square kilometres and give only the numerical value as a string."
-    ),
+    "countryLandBordersCountry": "Which countries share a land border with {subject}?",
+    "personHasCityOfDeath": "In which city did {subject} die?",
+    "hasCapacity": "What is the spectator capacity of {subject}?",
+    "awardWonBy": "Who has received the award {subject}?",
+    "companyTradesAtStockExchange": "On which stock exchanges is {subject} listed?",
+    "hasArea": "What is the total area of {subject} in square kilometres?",
 }
 
 

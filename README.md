@@ -146,31 +146,53 @@ python -m llm_kbc.evaluation \
 with FP16 weights, batch size one, eager attention, greedy decoding
 (`do_sample=False`, one beam), a fixed seed, and deterministic PyTorch algorithms.
 No quantization, retrieval, examples, gold answers, fine-tuning, or automatic
-retries are used. The fixed prompt `lm-kbc-2026-zero-shot-v1` covers all six
-[official relation definitions](https://github.com/lm-kbc/dataset2026#relation-definitions),
-their units, and the benchmark's 1 July 2026 reference date. Only subject and
+retries are used. The fixed prompt `lm-kbc-2026-zero-shot-v2` uses short questions
+for all six [official relations](https://github.com/lm-kbc/dataset2026#relation-definitions),
+with numerical units where applicable. The system prompt sets the reference date
+to 1 July 2026. Only subject and
 relation enter the prompt; nested gold answers are validated and then ignored.
 
 Each successful run writes one exact-schema prediction record per selected
-input, preserving names and order. Only complete JSON string arrays or an entire
-fenced JSON array are accepted. Commentary, numeric JSON values, nesting, and
-truncated JSON fail parsing; answers are not coerced, normalized, or deduplicated.
+input, preserving names and order. Duplicate subject-relation input pairs are
+rejected before model loading. Complete JSON arrays of strings and finite numbers,
+optionally entirely fenced, are accepted. Numeric tokens become strings with
+their original spelling and order; answers are not deduplicated. Commentary,
+booleans, null, nesting, non-finite numbers, and malformed JSON fail parsing.
 An explicit model response containing an empty array is a valid abstention.
 
-Two sidecars accompany the requested output path:
+Three sidecars accompany the requested output path:
 
 - `<output>.metadata.json`: model ID and requested/resolved Hub commit, prompt
   version/text/hash, chat-template hash, generation configuration, source/input/
   output hashes, selection and counts, library versions, GPU/CUDA details, and status.
+  `total_inputs` counts selected records; `valid_records` counts successfully
+  parsed responses, separately from `parse_failures` and
+  `numeric_normalized_responses`. `format_validity_rate` is valid/processed
+  responses (null before any response is processed), so interrupted runs must
+  also be checked for coverage using `processed_records` and `total_inputs`.
+- `<output>.raw.jsonl`: every original raw response, one-based input line,
+  subject/relation, `parsing_status`, and error (null for valid responses).
+  Each entry is flushed before generating the next response.
 - `<output>.failures.jsonl`: input line, subject/relation, raw response, and error
-  for every parse failure; empty on success.
+  for every parse failure; empty when all responses parse successfully.
 
-Parse failures cause a nonzero exit and **no final prediction file**. Valid
-responses from that failed run are not published as a partial evaluation input.
-Inspect diagnostics and explicitly rerun to a new output path, increasing the
-token budget if needed. Large award-recipient sets may exceed 512 tokens. Existing
-outputs and sidecars are never overwritten. Interrupted runs may leave metadata
-marked `running`; only status `complete` denotes a finished run.
+The explicit methodological policy `parse-failure-as-abstention-v1` is recorded
+in metadata as `parse_failure_policy`: each malformed generation produces a scoring
+row with `ObjectEntities: []`, while its original response and error remain in both
+logs. No answer is recovered from malformed text and no retry occurs. This is our
+documented policy, not an official rule for processing raw LLM generations.
+The unchanged evaluator gives an empty prediction F1 = 0 for nonempty gold and
+F1 = 1 for empty gold. Report parse failures and format validity alongside official
+metrics; do not drop failed records or score only the valid subset.
+
+After all selected inputs are generated, coverage, order, unique identities, and
+prediction schema are checked before atomic publication. Parse failures alone
+allow a complete run and a zero exit code. Runtime errors, OOM, or interruptions
+prevent publication; available raw records and diagnostics remain. Large
+award-recipient sets may exceed 512 tokens. Existing outputs and sidecars are
+never overwritten. Abrupt process termination may leave metadata marked `running`;
+only status `complete` denotes a finished run. A smoke run is complete only for
+its selected inputs and must not be evaluated against the full validation split.
 
 The default Qwen revision is pinned; other `--model` values default to resolving
 `main` unless `--revision` is supplied. Both tokenizer and model use the same

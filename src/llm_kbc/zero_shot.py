@@ -178,7 +178,8 @@ def run_inference(
 ) -> dict[str, Any]:
     """Publish one valid prediction per selected input, or fail with diagnostics.
 
-    Sidecars are <output>.metadata.json and <output>.failures.jsonl. A failed run
+    Sidecars record metadata, every raw response, and parse failures. Malformed
+    responses become explicit empty-list abstentions for scoring. A runtime error
     never publishes an incomplete prediction file for accidental evaluation.
     Existing files are never overwritten. There are no retries or resume logic.
     """
@@ -187,7 +188,8 @@ def run_inference(
     dataset, output = Path(dataset), Path(output)
     metadata_path = Path(str(output) + ".metadata.json")
     failures_path = Path(str(output) + ".failures.jsonl")
-    for path in (output, metadata_path, failures_path):
+    raw_path = Path(str(output) + ".raw.jsonl")
+    for path in (output, metadata_path, failures_path, raw_path):
         if path.exists() or path.is_symlink():
             raise InferenceError(f"Refusing to overwrite existing file: {path}")
     # Project only keys into the inference layer, preserving file order and names.
@@ -197,6 +199,8 @@ def run_inference(
     ]
     if not inputs:
         raise InferenceError("Dataset selection has no records")
+    if len(set(inputs)) != len(inputs):
+        raise InferenceError("Dataset selection has duplicate subject-relation pairs")
     messages = [build_messages(subject, relation) for subject, relation in inputs]
     requested_revision = revision or (DEFAULT_REVISION if model_id == DEFAULT_MODEL else "main")
     generate, runtime = _load_generator(model_id, requested_revision, max_new_tokens)
@@ -211,70 +215,91 @@ def run_inference(
         "dataset": {"path": str(dataset.resolve()), "sha256": hashlib.sha256(dataset.read_bytes()).hexdigest()},
         "selection": {"strategy": "first_records_in_file_order", "max_examples": max_examples, "records": len(inputs)},
         "output": str(output.resolve()),
+        "total_inputs": len(inputs),
         "status": "running", "processed_records": 0, "valid_records": 0, "parse_failures": 0,
+        "format_validity_rate": None,
         "numeric_normalized_responses": 0,
+        "parse_failure_policy": "parse-failure-as-abstention-v1",
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     # Reserve sidecars exclusively as well as checking paths above.
     with metadata_path.open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(metadata, indent=2, ensure_ascii=True) + "\n")
     predictions = []
-    with failures_path.open("x", encoding="utf-8") as failures:
+    with failures_path.open("x", encoding="utf-8") as failures, raw_path.open("x", encoding="utf-8") as raw:
         try:
             for index, ((subject, relation), chat) in enumerate(zip(inputs, messages), start=1):
                 response = generate(chat)
+                record = {
+                    "input_line": index, "SubjectEntity": subject, "Relation": relation,
+                    "response": response, "parsing_status": "valid", "error": None,
+                }
                 try:
                     objects, normalized = _parse_response(response)
-                    predictions.append(validate_prediction({
-                        "SubjectEntity": subject, "Relation": relation, "ObjectEntities": objects,
-                    }, location=f"generated record {index}"))
+                except InferenceError as error:
+                    # An explicit scoring abstention, never a repaired model answer.
+                    objects = []
+                    record.update(parsing_status="parse_failed", error=str(error))
+                except BaseException as error:
+                    record.update(parsing_status="interrupted", error=str(error) or type(error).__name__)
+                    raise
+                finally:
+                    # Flush every original response before processing another input,
+                    # including when parsing is interrupted unexpectedly.
+                    raw.write(json.dumps(record, ensure_ascii=True) + "\n")
+                    raw.flush()
+                if record["parsing_status"] == "valid":
+                    metadata["valid_records"] += 1
                     if normalized:
                         metadata["numeric_normalized_responses"] += 1
-                except InferenceError as error:
+                else:
                     failures.write(json.dumps({
                         "input_line": index, "SubjectEntity": subject, "Relation": relation,
-                        "response": response, "error": str(error),
+                        "response": response, "error": record["error"],
                     }, ensure_ascii=True) + "\n")
                     failures.flush()
                     metadata["parse_failures"] += 1
                 metadata["processed_records"] = index
-                metadata["valid_records"] = len(predictions)
+                metadata["format_validity_rate"] = metadata["valid_records"] / index
+                predictions.append(validate_prediction({
+                    "SubjectEntity": subject, "Relation": relation, "ObjectEntities": objects,
+                }, location=f"generated record {index}"))
                 print(f"Generated {index}/{len(inputs)}; parse failures: {metadata['parse_failures']}", file=sys.stderr)
-            if metadata["parse_failures"]:
-                metadata["status"] = "parse_failed"
-            else:
-                # Publish only a fully written file. Exclusive sidecars reserve
-                # this output name across runs of this command.
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=output.parent, delete=False,
-                ) as stream:
-                    temporary = Path(stream.name)
-                    try:
-                        for prediction in predictions:
-                            stream.write(json.dumps(prediction, ensure_ascii=True) + "\n")
-                    except BaseException:
-                        stream.close()
-                        temporary.unlink(missing_ok=True)
-                        raise
+            if len(predictions) != len(inputs) or metadata["processed_records"] != len(inputs):
+                raise InferenceError("Incomplete prediction coverage; no prediction file was published")
+            identities = []
+            for index, prediction in enumerate(predictions, start=1):
+                validate_prediction(prediction, location=f"final prediction {index}")
+                identities.append((prediction["SubjectEntity"], prediction["Relation"]))
+            if identities != inputs or len(set(identities)) != len(inputs):
+                raise InferenceError("Prediction order or unique identities do not match the selected inputs")
+            # Publish only a fully written, validated file. Exclusive sidecars
+            # reserve this output name across runs of this command.
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=output.parent, delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
                 try:
-                    if output.exists() or output.is_symlink():
-                        raise InferenceError(f"Refusing to overwrite existing file: {output}")
-                    os.replace(temporary, output)
-                finally:
+                    for prediction in predictions:
+                        stream.write(json.dumps(prediction, ensure_ascii=True) + "\n")
+                except BaseException:
+                    stream.close()
                     temporary.unlink(missing_ok=True)
-                metadata["status"] = "complete"
-                metadata["output_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
-        except Exception as error:
-            metadata["status"] = "runtime_error"
-            metadata["error"] = str(error)
+                    raise
+            try:
+                if output.exists() or output.is_symlink():
+                    raise InferenceError(f"Refusing to overwrite existing file: {output}")
+                os.replace(temporary, output)
+            finally:
+                temporary.unlink(missing_ok=True)
+            metadata["status"] = "complete"
+            metadata["output_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+        except BaseException as error:
+            metadata["status"] = "runtime_error" if isinstance(error, Exception) else "interrupted"
+            metadata["error"] = str(error) or type(error).__name__
             raise
         finally:
             metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    if metadata["parse_failures"]:
-        raise InferenceError(
-            f"{metadata['parse_failures']} response(s) failed parsing; see {failures_path}. "
-            "No prediction file was published; use a new output path for a rerun."
-        )
     return metadata
 
 

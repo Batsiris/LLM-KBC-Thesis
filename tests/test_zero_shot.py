@@ -37,7 +37,7 @@ def fake_generator(monkeypatch, responses):
         def generate(messages):
             calls.append(messages)
             response = next(responses)
-            if isinstance(response, Exception):
+            if isinstance(response, BaseException):
                 raise response
             return response
 
@@ -105,6 +105,7 @@ def test_numeric_tokens_become_strings_without_value_or_order_changes(text, expe
     '[1, true]', '[1, null]', '[1, [2]]', '[1, {"value": 2}]', '[1, NaN]',
     '[1, Infinity]', '[1, -Infinity]', '```json\n[false]\n```',
     '[104.4,]', '[01]', '[+1]', '[.4]', '[1.]', '[1e]', 'Answer: [104.4]',
+    '24522\u27e9',
 ])
 def test_parse_failure_never_becomes_empty(text):
     with pytest.raises(zs.InferenceError):
@@ -127,6 +128,9 @@ def test_successful_run_is_complete_validated_and_reproducible(tmp_path, monkeyp
     assert metadata["status"] == "complete"
     assert metadata["valid_records"] == metadata["processed_records"] == 2
     assert metadata["parse_failures"] == 0
+    assert metadata["total_inputs"] == 2
+    assert metadata["format_validity_rate"] == 1.0
+    assert metadata["parse_failure_policy"] == "parse-failure-as-abstention-v1"
     assert metadata["numeric_normalized_responses"] == 0
     assert metadata["prompt_version"] == zs.PROMPT_VERSION
     assert metadata["output_sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
@@ -149,24 +153,50 @@ def test_smoke_limit_preserves_order_and_custom_revision(tmp_path, monkeypatch):
     }
 
 
-def test_parse_failures_are_separate_and_prevent_partial_evaluation(tmp_path, monkeypatch):
-    dataset = write_dataset(tmp_path)
+def test_estonia_failure_abstains_with_complete_ordered_coverage_and_raw_log(tmp_path, monkeypatch):
+    dataset = write_dataset(tmp_path, ("hasArea",) * 5)
+    rows = [json.loads(line) for line in dataset.read_text().splitlines()]
+    rows[1]["SubjectEntity"] = "Estonia"
+    dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     output = tmp_path / "predictions.jsonl"
-    raw_failure = '  ```json\n[123, null]\n```  '
-    fake_generator(monkeypatch, [raw_failure, '["good"]'])
-    with pytest.raises(zs.InferenceError, match="No prediction file was published"):
-        zs.run_inference(dataset, output)
-    assert not output.exists()
+    raw_path = Path(str(output) + ".raw.jsonl")
+    responses = ['  [104.4]\n', '24522\u27e9', '```json\n[418]\n```', '[]', '[44.8]']
+    calls = []
+
+    def generate(messages):
+        # Previous responses must be flushed while generation is still running.
+        logged = [json.loads(line) for line in raw_path.read_text().splitlines()]
+        assert [row["response"] for row in logged] == responses[:len(calls)]
+        assert not output.exists()
+        calls.append(messages)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(zs, "_load_generator", lambda *args: (generate, {}))
+    metadata = zs.run_inference(dataset, output)
+    predictions = list(load_predictions(output))
+    assert [(row["SubjectEntity"], row["Relation"]) for row in predictions] == [
+        (row["SubjectEntity"], row["Relation"]) for row in rows
+    ]
+    assert [row["ObjectEntities"] for row in predictions] == [["104.4"], [], ["418"], [], ["44.8"]]
+    raw = [json.loads(line) for line in raw_path.read_text().splitlines()]
+    assert [row["response"] for row in raw] == responses
+    assert [row["input_line"] for row in raw] == [1, 2, 3, 4, 5]
+    assert [(row["SubjectEntity"], row["Relation"]) for row in raw] == [
+        (row["SubjectEntity"], row["Relation"]) for row in rows
+    ]
+    assert [row["parsing_status"] for row in raw] == ["valid", "parse_failed", "valid", "valid", "valid"]
+    assert all(row["error"] is None for row in raw if row["parsing_status"] == "valid")
+    assert raw[1]["error"].startswith("Response is not a complete JSON array")
     failures = [json.loads(line) for line in Path(str(output) + ".failures.jsonl").read_text().splitlines()]
     assert len(failures) == 1
-    assert failures[0]["input_line"] == 1
-    assert failures[0]["response"] == raw_failure
-    assert failures[0]["SubjectEntity"] == "Subject 0"
-    metadata = json.loads(Path(str(output) + ".metadata.json").read_text())
-    assert metadata["status"] == "parse_failed"
-    assert metadata["processed_records"] == 2
-    assert metadata["valid_records"] == metadata["parse_failures"] == 1
-    assert metadata["numeric_normalized_responses"] == 0
+    assert failures[0] == {key: value for key, value in raw[1].items() if key != "parsing_status"}
+    assert metadata["status"] == "complete"
+    assert metadata["total_inputs"] == metadata["processed_records"] == 5
+    assert metadata["valid_records"] == 4
+    assert metadata["parse_failures"] == 1
+    assert metadata["format_validity_rate"] == 0.8
+    assert metadata["numeric_normalized_responses"] == 3
+    assert metadata == json.loads(Path(str(output) + ".metadata.json").read_text())
 
 
 def test_normalization_metadata_counts_responses_not_elements(tmp_path, monkeypatch):
@@ -188,25 +218,93 @@ def test_normalization_count_is_preserved_when_another_response_fails(tmp_path, 
     output = tmp_path / "predictions.jsonl"
     raw_failure = '[44.8, false]'
     fake_generator(monkeypatch, ['[104.4]', raw_failure])
-    with pytest.raises(zs.InferenceError, match="No prediction file was published"):
-        zs.run_inference(dataset, output)
+    zs.run_inference(dataset, output)
     metadata = json.loads(Path(str(output) + ".metadata.json").read_text())
     assert metadata["numeric_normalized_responses"] == 1
     assert metadata["valid_records"] == metadata["parse_failures"] == 1
     assert json.loads(Path(str(output) + ".failures.jsonl").read_text())["response"] == raw_failure
-    assert not output.exists()
+    assert [row["ObjectEntities"] for row in load_predictions(output)] == [["104.4"], []]
 
 
-def test_runtime_error_has_metadata_and_no_prediction_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize("first_response", ["[]", '24522\u27e9'])
+@pytest.mark.parametrize("error", [RuntimeError("fake out of memory"), StopIteration("incomplete"), KeyboardInterrupt()])
+def test_interrupted_generation_preserves_raw_log_without_publishing(tmp_path, monkeypatch, first_response, error):
     dataset = write_dataset(tmp_path)
     output = tmp_path / "predictions.jsonl"
-    fake_generator(monkeypatch, ["[]", RuntimeError("fake out of memory")])
-    with pytest.raises(RuntimeError, match="fake out of memory"):
+    fake_generator(monkeypatch, [first_response, error])
+    with pytest.raises(type(error)):
         zs.run_inference(dataset, output)
     assert not output.exists()
     metadata = json.loads(Path(str(output) + ".metadata.json").read_text())
-    assert metadata["status"] == "runtime_error"
+    assert metadata["status"] == ("interrupted" if isinstance(error, KeyboardInterrupt) else "runtime_error")
     assert metadata["processed_records"] == 1
+    assert metadata["total_inputs"] == 2
+    assert metadata["format_validity_rate"] == (1.0 if first_response == "[]" else 0.0)
+    raw = [json.loads(line) for line in Path(str(output) + ".raw.jsonl").read_text().splitlines()]
+    assert len(raw) == 1
+    assert raw[0]["response"] == first_response
+
+
+def test_unexpected_parser_interruption_still_preserves_raw_response(tmp_path, monkeypatch):
+    dataset = write_dataset(tmp_path)
+    output = tmp_path / "predictions.jsonl"
+    fake_generator(monkeypatch, ['[104.4]'])
+
+    def interrupt(response):
+        raise RuntimeError("unexpected parser failure")
+
+    monkeypatch.setattr(zs, "_parse_response", interrupt)
+    with pytest.raises(RuntimeError, match="unexpected parser failure"):
+        zs.run_inference(dataset, output)
+    assert not output.exists()
+    raw = json.loads(Path(str(output) + ".raw.jsonl").read_text())
+    assert raw["response"] == '[104.4]'
+    assert raw["parsing_status"] == "interrupted"
+    assert raw["error"] == "unexpected parser failure"
+
+
+@pytest.mark.parametrize("corruption", ["schema", "identity", "duplicate"])
+def test_final_validation_rejects_invalid_predictions_before_publication(tmp_path, monkeypatch, corruption):
+    dataset = write_dataset(tmp_path)
+    output = tmp_path / "predictions.jsonl"
+    fake_generator(monkeypatch, ['[104.4]', '[418]'])
+    original_validate = zs.validate_prediction
+
+    def corrupt(row, *, location):
+        validated = original_validate(row, location=location)
+        if location == "generated record 2":
+            if corruption == "schema":
+                validated["ObjectEntities"] = [["nested"]]
+            elif corruption == "identity":
+                validated["SubjectEntity"] = "wrong subject"
+            else:
+                validated.update(SubjectEntity="Subject 0", Relation="hasArea")
+        return validated
+
+    monkeypatch.setattr(zs, "validate_prediction", corrupt)
+    with pytest.raises((DatasetError, zs.InferenceError)):
+        zs.run_inference(dataset, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("gold_objects, expected_f1", [([], 1.0), ([["104.4"]], 0.0)])
+def test_malformed_generation_abstention_uses_official_empty_case_scoring(tmp_path, monkeypatch, gold_objects, expected_f1):
+    from llm_kbc.evaluation.lm_kbc_2026 import LMKBC2026Evaluator
+
+    dataset = write_dataset(tmp_path, ("hasArea",))
+    row = json.loads(dataset.read_text())
+    row["ObjectEntities"] = gold_objects
+    dataset.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    output = tmp_path / "predictions.jsonl"
+    fake_generator(monkeypatch, ['24522\u27e9'])
+    metadata = zs.run_inference(dataset, output)
+    assert metadata["valid_records"] == 0
+    assert metadata["parse_failures"] == 1
+    assert metadata["format_validity_rate"] == 0.0
+    result = LMKBC2026Evaluator().evaluate(data_dir=tmp_path, split="val", predictions_path=output)
+    assert result.overall["macro-p"] == result.overall["micro-p"] == 1.0
+    assert result.overall["macro-r"] == result.overall["micro-r"] == expected_f1
+    assert result.overall["macro-f1"] == result.overall["micro-f1"] == expected_f1
 
 
 def test_failed_publication_leaves_no_partial_output_or_temporary_file(tmp_path, monkeypatch):
@@ -225,26 +323,26 @@ def test_failed_publication_leaves_no_partial_output_or_temporary_file(tmp_path,
     assert not output.exists()
     assert {path.name for path in tmp_path.iterdir()} == {
         "val.jsonl", "predictions.jsonl.metadata.json", "predictions.jsonl.failures.jsonl",
+        "predictions.jsonl.raw.jsonl",
     }
     metadata = json.loads(Path(str(output) + ".metadata.json").read_text())
     assert metadata["status"] == "runtime_error"
 
 
-def test_duplicate_input_pairs_still_produce_one_record_per_input(tmp_path, monkeypatch):
+def test_duplicate_input_pairs_are_rejected_before_loading_model(tmp_path, monkeypatch):
     dataset = write_dataset(tmp_path, ("hasArea", "hasArea"))
     rows = [json.loads(line) for line in dataset.read_text().splitlines()]
     rows[1]["SubjectEntity"] = rows[0]["SubjectEntity"]
     dataset.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    fake_generator(monkeypatch, ['["1"]', '["2"]'])
+    calls = fake_generator(monkeypatch, [])
     output = tmp_path / "predictions.jsonl"
-    zs.run_inference(dataset, output)
-    predictions = list(load_predictions(output))
-    assert len(predictions) == 2
-    assert predictions[0]["SubjectEntity"] == predictions[1]["SubjectEntity"]
-    assert [row["ObjectEntities"] for row in predictions] == [["1"], ["2"]]
+    with pytest.raises(zs.InferenceError, match="duplicate subject-relation pairs"):
+        zs.run_inference(dataset, output)
+    assert calls == []
+    assert not output.exists()
 
 
-@pytest.mark.parametrize("suffix", ["", ".metadata.json", ".failures.jsonl"])
+@pytest.mark.parametrize("suffix", ["", ".metadata.json", ".failures.jsonl", ".raw.jsonl"])
 def test_existing_artifacts_are_never_overwritten(tmp_path, monkeypatch, suffix):
     dataset = write_dataset(tmp_path)
     calls = fake_generator(monkeypatch, [])
@@ -414,12 +512,13 @@ def test_cli_help_needs_no_inference_dependencies():
         assert flag in completed.stdout
 
 
-def test_cli_smoke_arguments_and_nonzero_parse_failure(tmp_path, monkeypatch):
+def test_cli_smoke_arguments_and_success_with_logged_abstention(tmp_path, monkeypatch):
     dataset = write_dataset(tmp_path, ("hasArea",))
     output = tmp_path / "predictions.jsonl"
     calls = fake_generator(monkeypatch, ["not JSON"])
-    with pytest.raises(SystemExit) as error:
-        zs.main(["--dataset", str(dataset), "--output", str(output), "--max-examples", "1", "--max-new-tokens", "32"])
-    assert error.value.code == 2
+    assert zs.main([
+        "--dataset", str(dataset), "--output", str(output), "--max-examples", "1", "--max-new-tokens", "32",
+    ]) == 0
     assert calls[0][-1] == 32
-    assert not output.exists()
+    assert list(load_predictions(output))[0]["ObjectEntities"] == []
+    assert json.loads(Path(str(output) + ".failures.jsonl").read_text())["response"] == "not JSON"

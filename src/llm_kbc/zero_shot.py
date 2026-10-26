@@ -58,22 +58,40 @@ def build_messages(subject: str, relation: str) -> list[dict[str, str]]:
 
 
 def parse_response(response: str) -> list[str]:
-    """Accept a JSON string array, optionally enclosed in one whole code fence.
+    """Accept strings and finite JSON numbers, returning an array of strings.
 
-    No substring guessing, numeric coercion, deduplication, or error-to-empty
-    conversion is performed. Commentary, multiple arrays, and truncation fail.
+    Numeric tokens retain their exact value and spelling, without a float
+    round-trip. A whole code fence is allowed; malformed text is never repaired.
     """
+    objects, _ = _parse_response(response)
+    return objects
+
+
+def _parse_response(response: str) -> tuple[list[str], bool]:
+    """Parse once, also reporting whether a valid response needed normalization."""
     text = response.strip()
     fence = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()
+    normalized = False
+
+    def stringify_number(token: str) -> str:
+        nonlocal normalized
+        if token in ("NaN", "Infinity", "-Infinity"):
+            raise InferenceError("Response contains a non-finite number")
+        normalized = True
+        return token
+
     try:
-        objects = json.loads(text)
+        objects = json.loads(
+            text, parse_int=stringify_number, parse_float=stringify_number,
+            parse_constant=stringify_number,
+        )
     except json.JSONDecodeError as error:
         raise InferenceError(f"Response is not a complete JSON array: {error.msg}") from error
     if not isinstance(objects, list) or any(not isinstance(value, str) for value in objects):
-        raise InferenceError("Response must be a flat JSON array of strings")
-    return objects
+        raise InferenceError("Response must be a flat JSON array of strings and finite numbers")
+    return objects, normalized
 
 
 def _load_generator(
@@ -194,6 +212,7 @@ def run_inference(
         "selection": {"strategy": "first_records_in_file_order", "max_examples": max_examples, "records": len(inputs)},
         "output": str(output.resolve()),
         "status": "running", "processed_records": 0, "valid_records": 0, "parse_failures": 0,
+        "numeric_normalized_responses": 0,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     # Reserve sidecars exclusively as well as checking paths above.
@@ -205,10 +224,12 @@ def run_inference(
             for index, ((subject, relation), chat) in enumerate(zip(inputs, messages), start=1):
                 response = generate(chat)
                 try:
-                    objects = parse_response(response)
+                    objects, normalized = _parse_response(response)
                     predictions.append(validate_prediction({
                         "SubjectEntity": subject, "Relation": relation, "ObjectEntities": objects,
                     }, location=f"generated record {index}"))
+                    if normalized:
+                        metadata["numeric_normalized_responses"] += 1
                 except InferenceError as error:
                     failures.write(json.dumps({
                         "input_line": index, "SubjectEntity": subject, "Relation": relation,

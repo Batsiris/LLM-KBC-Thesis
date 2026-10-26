@@ -84,10 +84,27 @@ def test_parse_valid_responses_without_normalization(text, expected):
     assert zs.parse_response(text) == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ('[104.4]', ["104.4"]),
+    ('[418]', ["418"]),
+    ('[44.8]', ["44.8"]),
+    ('["name", 104.4, "418", 418, 44.8]', ["name", "104.4", "418", "418", "44.8"]),
+    ('[-12, 0, -0, -0.0, 1.2300, 1e3, 4.2E-7]', ["-12", "0", "-0", "-0.0", "1.2300", "1e3", "4.2E-7"]),
+    ('[9007199254740993, 0.12345678901234567890123456789]', ["9007199254740993", "0.12345678901234567890123456789"]),
+    ('```json\n[104.4, "name"]\n```', ["104.4", "name"]),
+    ('["NaN", "Infinity"]', ["NaN", "Infinity"]),
+])
+def test_numeric_tokens_become_strings_without_value_or_order_changes(text, expected):
+    assert zs.parse_response(text) == expected
+
+
 @pytest.mark.parametrize("text", [
     "", "I do not know", 'Here is the answer: ["x"]', '["x"] trailing text',
     '["x"] ["y"]', '["truncated"', '{"objects":["x"]}', '[["x"]]',
-    "[123]", "[true]", "[null]", "null", "[NaN]", "```json\n[123]\n```",
+    "[true]", "[false]", "[null]", "null", "[NaN]", "[Infinity]", "[-Infinity]",
+    '[1, true]', '[1, null]', '[1, [2]]', '[1, {"value": 2}]', '[1, NaN]',
+    '[1, Infinity]', '[1, -Infinity]', '```json\n[false]\n```',
+    '[104.4,]', '[01]', '[+1]', '[.4]', '[1.]', '[1e]', 'Answer: [104.4]',
 ])
 def test_parse_failure_never_becomes_empty(text):
     with pytest.raises(zs.InferenceError):
@@ -110,6 +127,7 @@ def test_successful_run_is_complete_validated_and_reproducible(tmp_path, monkeyp
     assert metadata["status"] == "complete"
     assert metadata["valid_records"] == metadata["processed_records"] == 2
     assert metadata["parse_failures"] == 0
+    assert metadata["numeric_normalized_responses"] == 0
     assert metadata["prompt_version"] == zs.PROMPT_VERSION
     assert metadata["output_sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert metadata["dataset"]["sha256"] == hashlib.sha256(before).hexdigest()
@@ -134,19 +152,49 @@ def test_smoke_limit_preserves_order_and_custom_revision(tmp_path, monkeypatch):
 def test_parse_failures_are_separate_and_prevent_partial_evaluation(tmp_path, monkeypatch):
     dataset = write_dataset(tmp_path)
     output = tmp_path / "predictions.jsonl"
-    fake_generator(monkeypatch, ['[123]', '["good"]'])
+    raw_failure = '  ```json\n[123, null]\n```  '
+    fake_generator(monkeypatch, [raw_failure, '["good"]'])
     with pytest.raises(zs.InferenceError, match="No prediction file was published"):
         zs.run_inference(dataset, output)
     assert not output.exists()
     failures = [json.loads(line) for line in Path(str(output) + ".failures.jsonl").read_text().splitlines()]
     assert len(failures) == 1
     assert failures[0]["input_line"] == 1
-    assert failures[0]["response"] == "[123]"
+    assert failures[0]["response"] == raw_failure
     assert failures[0]["SubjectEntity"] == "Subject 0"
     metadata = json.loads(Path(str(output) + ".metadata.json").read_text())
     assert metadata["status"] == "parse_failed"
     assert metadata["processed_records"] == 2
     assert metadata["valid_records"] == metadata["parse_failures"] == 1
+    assert metadata["numeric_normalized_responses"] == 0
+
+
+def test_normalization_metadata_counts_responses_not_elements(tmp_path, monkeypatch):
+    dataset = write_dataset(tmp_path, ("hasArea",) * 4)
+    output = tmp_path / "predictions.jsonl"
+    fake_generator(monkeypatch, ['[104.4, 418, "44.8"]', '[44.8]', '["418"]', '[]'])
+    metadata = zs.run_inference(dataset, output)
+    assert [row["ObjectEntities"] for row in load_predictions(output)] == [
+        ["104.4", "418", "44.8"], ["44.8"], ["418"], [],
+    ]
+    assert metadata["numeric_normalized_responses"] == 2
+    assert metadata["valid_records"] == 4
+    assert metadata["parse_failures"] == 0
+    assert json.loads(Path(str(output) + ".metadata.json").read_text())["numeric_normalized_responses"] == 2
+
+
+def test_normalization_count_is_preserved_when_another_response_fails(tmp_path, monkeypatch):
+    dataset = write_dataset(tmp_path)
+    output = tmp_path / "predictions.jsonl"
+    raw_failure = '[44.8, false]'
+    fake_generator(monkeypatch, ['[104.4]', raw_failure])
+    with pytest.raises(zs.InferenceError, match="No prediction file was published"):
+        zs.run_inference(dataset, output)
+    metadata = json.loads(Path(str(output) + ".metadata.json").read_text())
+    assert metadata["numeric_normalized_responses"] == 1
+    assert metadata["valid_records"] == metadata["parse_failures"] == 1
+    assert json.loads(Path(str(output) + ".failures.jsonl").read_text())["response"] == raw_failure
+    assert not output.exists()
 
 
 def test_runtime_error_has_metadata_and_no_prediction_file(tmp_path, monkeypatch):

@@ -203,6 +203,67 @@ versions](https://docs.pytorch.org/docs/2.9/notes/randomness.html). GPU loading 
 performance still require the Colab smoke check; automated tests use fakes and
 need neither the `inference` extra nor a GPU. No notebook is required.
 
+## Exploratory format-repair ablation
+
+This independent post-processing ablation uses saved generations from an
+**already inspected validation split**. It is exploratory, not an unbiased official
+benchmark submission. It performs no inference, factual correction, retrieval,
+gold-label lookup, or metric-based selection. The strict baseline remains intact.
+
+```sh
+python -m llm_kbc.format_repair --raw-generations results/zero_shot_val.jsonl.raw.jsonl --baseline-predictions results/zero_shot_val.jsonl --output results/zero_shot_val_repaired.jsonl
+python -m llm_kbc.evaluation --benchmark lm-kbc-2026 --split val --data-dir data/lm_kbc_2026 --predictions results/zero_shot_val_repaired.jsonl
+```
+
+Policy `lm-kbc-format-repair-v1` applies only to strict parse failures:
+
+- A standalone JSON number such as `1.2300` becomes `["1.2300"]`. JSON number
+  spelling is preserved without floating-point conversion; NaN, infinity,
+  grouping commas, decimal commas, Unicode numeric punctuation, and stray
+  characters (including `24522⟩`) are rejected.
+- A bracketed list of at least two unquoted names separated by exactly `, `,
+  such as `[France, Germany]`, becomes a JSON string array. Each space-separated
+  word must start with an uppercase letter and otherwise contain letters or
+  internal apostrophes, hyphens, or periods. A nonfinal alphabetic word may end
+  in a period, allowing `St. Louis`. Accented letters and internal `’` are allowed.
+  Digits, reserved JSON/non-finite words, mixed delimiters, quotes, nesting,
+  commentary, truncation, and other characters are rejected. This fixed comma
+  interpretation still has semantic ambiguity: `[Paris, Texas]` becomes two
+  strings even though it could denote one place, and `[Acme, Incorporated]` can
+  split one company name. The grammar cannot resolve this without interpreting
+  contents. Lowercase names/connectors and many legitimate punctuation patterns
+  are deliberately ineligible too; semicolon-separated lists are not repaired.
+
+Valid responses are checked with the existing strict parser and must agree with
+the baseline prediction; their original prediction lines remain byte-for-byte
+unchanged. In particular, valid numeric arrays such as `[1,234]` keep the baseline's
+two objects; this ablation never reinterprets them as a grouped number. Ineligible
+or unsuccessful repairs retain the original empty-list scoring abstention.
+
+Inputs must have equal nonzero lengths, matching ordered unique subject-relation
+pairs, contiguous one-based raw indices, and statuses/errors consistent with the
+strict parser. Failed baseline predictions must be empty lists. Coverage is
+verified **against the supplied baseline**, not an independent dataset manifest;
+jointly truncated inputs cannot be detected. Supply the complete validation run,
+not smoke outputs. Parsing must agree with the current strict-baseline code.
+
+The separate prediction file is accompanied by `<output>.audit.jsonl` (every
+failed response inspected, raw text, original error, rule, success/rejection, and
+resulting prediction) and `<output>.metadata.json` (policy/source/parser hashes,
+input/output hashes, overall and per-relation counts). An attempt means one strict
+parse failure inspected by the rule set, including an ineligible response.
+Report attempts, successes, remaining failures, and both strict/repaired official
+scores; empty abstentions can score perfectly when gold is empty.
+
+All validation finishes before writing artifacts. Files are never overwritten;
+closed temporary files are published using atomic hard links on NTFS/Linux.
+Unsupported filesystems fail safely. Predictions are published last; an I/O
+failure may leave complete audit/report sidecars without a prediction file.
+The name grammar is a syntactic restriction, not proof that a string is an entity
+or that its answers are factually correct. These rules are fixed independently
+of relations and gold answers, but inspecting validation outputs already limits
+the conclusions that can be drawn about generalization.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

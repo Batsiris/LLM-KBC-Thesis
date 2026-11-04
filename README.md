@@ -203,6 +203,106 @@ versions](https://docs.pytorch.org/docs/2.9/notes/randomness.html). GPU loading 
 performance still require the Colab smoke check; automated tests use fakes and
 need neither the `inference` extra nor a GPU. No notebook is required.
 
+## Few-shot Prompting v1: preparation only
+
+`llm_kbc.few_shot` selects training demonstrations and constructs prompts; it does
+not load weights, generate predictions, or score anything. It reuses the unchanged
+zero-shot v2 system prompt and six questions. Each query has three same-relation
+user/assistant examples followed by the query: eight chat messages in total.
+Assistant examples are complete JSON arrays of strings. This is a future inference
+condition, distinct from format repair, which post-processes existing generations.
+No repair rules are applied to few-shot prompts or demonstration answers.
+
+The fixed policy `relation-aware-3-shot-v1` reads **only `train.jsonl`**:
+
+- Represent each gold object by the first string in its alias group, preserving
+  spelling and group order. This is our representative-label convention; the
+  schema has alias groups rather than a separate canonical-label field. Never
+  concatenate aliases, convert numeric units, or truncate an answer set.
+- Exclude whole examples exceeding 32 objects or 1,024 UTF-8 bytes of serialized
+  representative-label JSON. These relation-independent caps keep award examples
+  short. Fail if fewer than three eligible examples remain for any relation.
+- For nonnumeric relations with empty and nonempty examples, target cardinalities
+  zero, smallest positive, and largest eligible. Without empty examples, use the
+  smallest, lower-median **distinct** cardinality, and largest. If there is only
+  one cardinality, use it three times. When a bucket is exhausted, choose the
+  nearest remaining cardinality, preferring the larger count on a distance tie.
+  All remaining ties use original subject strings in Unicode code-point order.
+- For numeric relations, rank singleton answers by exact finite decimal value
+  (ignoring grouping commas for ranking only), then original subject. Choose
+  positions 0, `(n-1)//2`, and `n-1`. If numeric empty examples exist, use the
+  lexicographically first empty example and the minimum/maximum nonempty examples;
+  require at least two nonempty candidates. No empty examples are invented.
+- Keep these selection-slot orders in the prompt. There is no random seed,
+  query-adaptive selection, validation ranking, or replacement on leakage.
+
+The local training snapshot has SHA-256
+`ad37cd30d1ff4b9f1ef2579b25e64093b202c40da11e8c412e13386f1e5d332e`.
+Its selected subjects and answer cardinalities are:
+
+| Relation | Ordered demonstrations (object count) |
+|---|---|
+| countryLandBordersCountry | Cuba (0); Canada (1); Germany (9) |
+| personHasCityOfDeath | Adel Emam (0); Alessandra Melucco Vaccaro (1); Angelo Rinaldi (1) |
+| hasCapacity | Martin Family Stadium in Virginia (1); Cowboy Stadium in Louisiana (1); Allegiant Stadium in Clark County (1) |
+| awardWonBy | UEFA Team of the Year (9); FAI Gold Air Medal (19); Order of the Golden Fleece (Georgia) (29) |
+| companyTradesAtStockExchange | Ablex Publishing (0); ANY Security Printing Company (1); ING Group (3) |
+| hasArea | Poveglia (1); Zakynthos (1); Angola (1) |
+
+Training links to validation/test files, duplicate identities, malformed labels,
+and unsupported relations fail. File naming is not proof of provenance: use the
+official training snapshot and retain its hash. Evaluation files contribute only
+`SubjectEntity` and `Relation`; their gold-answer fields are never accessed.
+All 18 demonstrations are checked against the entire input set before preparation
+succeeds. Subject matching uses NFKC, casefolding, and collapsed whitespace.
+Same-relation overlap fails; cross-relation subject overlap is reported without
+reselection. The selected 18 have no such overlaps with local validation inputs,
+although the full train/validation files share 11 exact subject names across
+different relations. These checks do not resolve entity aliases, reciprocal facts,
+object-to-subject connections, or pretraining contamination.
+
+```python
+from pathlib import Path
+from transformers import AutoTokenizer
+from llm_kbc import few_shot, zero_shot
+
+tokenizer = AutoTokenizer.from_pretrained(
+    zero_shot.DEFAULT_MODEL, revision=zero_shot.DEFAULT_REVISION,
+    trust_remote_code=False,
+)
+manifest = few_shot.prepare_prompts(
+    Path("data/lm_kbc_2026"), Path("data/lm_kbc_2026/val.jsonl"),
+    tokenizer=tokenizer,
+)
+```
+
+This optional CPU tokenizer preflight needs Transformers and Jinja2, available in
+the existing inference environment; it downloads no model weights. The returned
+manifest contains full demonstrations/messages, versions, input/source hashes,
+tokenizer/template details, content lengths, and token counts. Without a supplied
+tokenizer, token counts are `None` and `tokenizer_checked` is false. Before any
+future inference, use the pinned tokenizer and check the actual chat template,
+including generation markers, without truncation. The check reserves the explicit
+`max_new_tokens` budget and respects both model and tokenizer limits. No generation
+parameter is changed; the preparation default remains 512 new tokens.
+Archive the manifest together with the repository commit before future inference.
+
+A CPU preflight of all 475 local validation questions with Transformers 4.57.1,
+tokenizers 0.22.2, and the pinned Qwen revision measured 175–573 input tokens.
+The maximum plus 512 reserved output tokens is 1,085, within the pinned model's
+[32,768-position configuration](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/blob/aa8e72537993ba99e69dfaafa59ed015b17504d1/config.json).
+The tokenizer advertises 131,072 tokens; that larger value does not override the
+model configuration, and the preflight uses the smaller limit.
+This is a prompt-length measurement, not inference or model evaluation.
+
+**512 output tokens are not sufficient for every long award answer.** Using only
+training labels, complete representative-label arrays for the two Nobel awards
+require 1,545 and 1,559 tokenizer tokens even before an end-of-turn token. Five of
+the ten training awards are eligible under the demonstration caps. Short examples
+do not establish that validation award answers will fit. Preserve the 512-token
+condition for comparability; any larger-budget experiment must be explicit and
+reported separately. No validation/test labels were used for this assessment.
+
 ## Exploratory format-repair ablation
 
 This independent post-processing ablation uses saved generations from an
@@ -282,8 +382,9 @@ the implemented zero-shot pipeline.
 ## Layout
 
 - `src/llm_kbc/`: inspector, prediction parser, zero-shot inference, and evaluation interface/CLI.
+- `src/llm_kbc/few_shot.py`: training-only demonstration selection and prompt preparation.
 - `src/llm_kbc/_vendor/`: unchanged upstream evaluator with license and provenance.
-- `tests/`: smoke, dataset-inspection, and evaluation-protocol tests.
+- `tests/`: CLI, schema, evaluation, inference, format-repair, and prompt-selection tests.
 - `docs/`: evaluation usage, provenance, and metric definitions.
 - `configs/`: reserved for experiment configuration.
 - `data/`: local datasets; contents are ignored by Git.

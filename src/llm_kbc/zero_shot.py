@@ -221,6 +221,17 @@ def run_inference(
         "numeric_normalized_responses": 0,
         "parse_failure_policy": "parse-failure-as-abstention-v1",
     }
+    return _run_prepared(inputs, messages, generate, metadata, output)
+
+
+def _run_prepared(
+    inputs: list[tuple[str, str]], messages: list[list[dict[str, str]]],
+    generate: Callable[[list[dict[str, str]]], str], metadata: dict[str, Any], output: Path,
+) -> dict[str, Any]:
+    """Run prepared prompts through the shared audited parsing/publication path."""
+    metadata_path = Path(str(output) + ".metadata.json")
+    failures_path = Path(str(output) + ".failures.jsonl")
+    raw_path = Path(str(output) + ".raw.jsonl")
     output.parent.mkdir(parents=True, exist_ok=True)
     # Reserve sidecars exclusively as well as checking paths above.
     with metadata_path.open("x", encoding="utf-8") as stream:

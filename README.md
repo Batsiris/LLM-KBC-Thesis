@@ -203,13 +203,13 @@ versions](https://docs.pytorch.org/docs/2.9/notes/randomness.html). GPU loading 
 performance still require the Colab smoke check; automated tests use fakes and
 need neither the `inference` extra nor a GPU. No notebook is required.
 
-## Few-shot Prompting v1: preparation only
+## Few-shot Prompting v1
 
 `llm_kbc.few_shot` selects training demonstrations and constructs prompts; it does
 not load weights, generate predictions, or score anything. It reuses the unchanged
 zero-shot v2 system prompt and six questions. Each query has three same-relation
 user/assistant examples followed by the query: eight chat messages in total.
-Assistant examples are complete JSON arrays of strings. This is a future inference
+Assistant examples are complete JSON arrays of strings. This is a separate inference
 condition, distinct from format repair, which post-processes existing generations.
 No repair rules are applied to few-shot prompts or demonstration answers.
 
@@ -280,12 +280,12 @@ This optional CPU tokenizer preflight needs Transformers and Jinja2, available i
 the existing inference environment; it downloads no model weights. The returned
 manifest contains full demonstrations/messages, versions, input/source hashes,
 tokenizer/template details, content lengths, and token counts. Without a supplied
-tokenizer, token counts are `None` and `tokenizer_checked` is false. Before any
-future inference, use the pinned tokenizer and check the actual chat template,
+tokenizer, token counts are `None` and `tokenizer_checked` is false. Few-shot
+inference always uses the pinned tokenizer and checks the actual chat template,
 including generation markers, without truncation. The check reserves the explicit
 `max_new_tokens` budget and respects both model and tokenizer limits. No generation
 parameter is changed; the preparation default remains 512 new tokens.
-Archive the manifest together with the repository commit before future inference.
+The inference command automatically archives this manifest with source provenance.
 
 A CPU preflight of all 475 local validation questions with Transformers 4.57.1,
 tokenizers 0.22.2, and the pinned Qwen revision measured 175–573 input tokens.
@@ -302,6 +302,77 @@ the ten training awards are eligible under the demonstration caps. Short example
 do not establish that validation award answers will fit. Preserve the 512-token
 condition for comparability; any larger-budget experiment must be explicit and
 reported separately. No validation/test labels were used for this assessment.
+
+### Few-shot inference in Google Colab
+
+Use the T4 runtime, repository clone, installation, and pinned dataset-download
+commands in the zero-shot Colab section above. Run from a **Git checkout**; no
+notebook or additional dependency is needed. The inference CLI enforces the
+training SHA256 above, so another training snapshot requires a separately reviewed
+experiment. It calls the existing zero-shot GPU loader with the fixed Qwen model
+and revision, FP16, eager attention, batch size 1, seed 0, deterministic algorithms,
+`do_sample=False`, and **512 new tokens**. These settings cannot be overridden by
+this CLI. The original zero-shot CLI and prompt remain unchanged.
+
+Start with five records, writing to Colab's local filesystem:
+
+```bash
+%%bash
+set -e
+cd /content/LLM-KBC-Thesis
+python -m llm_kbc.few_shot_inference \
+  --data-dir data/lm_kbc_2026 --dataset data/lm_kbc_2026/val.jsonl \
+  --output /content/few_shot_v1/smoke.jsonl --max-examples 5
+```
+
+Before generation, **every input in the supplied file** is checked for schema,
+unique normalized identities, demonstration leakage, and actual templated context
+length with all 512 output tokens reserved. Even the smoke command checks all
+475 validation inputs, then generates only the first five in file order. Those
+five area queries do not check GPU generation for every relation; GPU memory and
+latency for award prompts still need measurement. Preflight itself is CPU-only,
+but real inference requires CUDA. Full validation is a separate command:
+
+```bash
+%%bash
+set -e
+cd /content/LLM-KBC-Thesis
+python -m llm_kbc.few_shot_inference \
+  --data-dir data/lm_kbc_2026 --dataset data/lm_kbc_2026/val.jsonl \
+  --output /content/few_shot_v1/val.jsonl
+python -m llm_kbc.evaluation --benchmark lm-kbc-2026 --split val \
+  --data-dir data/lm_kbc_2026 --predictions /content/few_shot_v1/val.jsonl
+```
+
+Do not evaluate smoke output as a complete run or score withheld test labels.
+Inspect `status: complete`, coverage, and format validity before scoring. There
+are no retries, resume, or syntactic repairs. The unchanged strict parser preserves
+numeric token spelling; malformed generations become explicit scoring abstentions,
+which can score perfectly when the official gold answer is empty.
+
+Each prediction file has `.raw.jsonl`, `.failures.jsonl`, `.metadata.json`, and
+`.manifest.json` sidecars appended to its name. Raw generations are flushed for
+every response; interruption/OOM retains diagnostics but publishes no incomplete
+prediction file. Final schema, order, and coverage checks and publication use the
+same runner as zero-shot. Existing artifacts are refused, so use fresh output
+names. The immutable manifest records all preflighted inputs/messages, exactly
+18 selected demonstrations, selection policy/version, training/input/source
+hashes, prompt version, source Git commit and dirty flag, pinned/resolved model
+revision, tokenizer versions/context/template hash, and actual generation/runtime
+settings. Metadata links its SHA256 and records completion and parsing counts.
+A manifest alone does not mean generation completed; pre-generation or I/O failure
+may leave sidecars. Archive all five files together. Use a clean, committed clone
+for reported runs: source hashes and a dirty flag cannot reconstruct uncommitted
+changes. Atomic replacement and flushes are not a multi-file transaction or a
+power-loss guarantee; prefer local `/content` over a mounted Drive filesystem.
+
+This experiment changes only demonstration conditioning relative to zero-shot;
+it is **not** the format-repair ablation. Selection uses training labels only,
+but the validation split has already been inspected during development. Report
+that limitation, unresolved alias-level leakage/pretraining contamination, the
+demonstration length caps, truncation risk for long award answers, format validity,
+and hardware/library differences alongside scores. CPU tests use fake generation;
+no actual few-shot GPU inference or evaluation has been performed during development.
 
 ## Exploratory format-repair ablation
 
@@ -367,22 +438,27 @@ the conclusions that can be drawn about generalization.
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot
-inference pipeline, and synthetic tests are implemented. LM-KBC 2026 dataset files
-are available locally. Generation and evaluation are separate commands; no
-experiment orchestration framework is implemented. **No model inference, baseline
-run, or experiment has been performed during development.** Colab/GPU execution
-has not yet been verified.
+and few-shot inference pipelines, and synthetic tests are implemented. LM-KBC 2026
+dataset files are available locally. Generation and evaluation are separate
+commands; no experiment orchestration framework is implemented.
 
-Planned experiments include running the zero-shot baseline, few-shot and further
+**Zero-shot v2 inference and its official LM-KBC 2026 evaluation, together with
+Format Repair v1, have been completed externally in Google Colab. Their artifacts
+are archived in Google Drive. Few-shot GPU inference has not yet been performed.**
+Local few-shot verification uses CPU tokenizer preflight and synthetic generation
+tests; it does not establish GPU execution or benchmark performance.
+
+Planned experiments include running the few-shot condition and further
 relation-aware prompting; fine-tuning and retrieval-augmented generation;
 self-consistency and candidate aggregation; evidence-grounded factual verification;
 and ontology-aware semantic validation. These remain research directions beyond
-the implemented zero-shot pipeline.
+the implemented inference pipelines.
 
 ## Layout
 
 - `src/llm_kbc/`: inspector, prediction parser, zero-shot inference, and evaluation interface/CLI.
 - `src/llm_kbc/few_shot.py`: training-only demonstration selection and prompt preparation.
+- `src/llm_kbc/few_shot_inference.py`: fixed few-shot inference CLI and reproducibility manifest.
 - `src/llm_kbc/_vendor/`: unchanged upstream evaluator with license and provenance.
 - `tests/`: CLI, schema, evaluation, inference, format-repair, and prompt-selection tests.
 - `docs/`: evaluation usage, provenance, and metric definitions.

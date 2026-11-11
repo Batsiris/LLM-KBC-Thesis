@@ -435,6 +435,99 @@ or that its answers are factually correct. These rules are fixed independently
 of relations and gold answers, but inspecting validation outputs already limits
 the conclusions that can be drawn about generalization.
 
+## QLoRA supervised fine-tuning v1 (implementation only)
+
+`llm_kbc.qlora_train` reuses training-only preparation, strict chat-template
+tokenization, and padding. It reads targets only from `train.jsonl`, preserves
+first-alias spelling and file order, and performs no validation/test evaluation.
+The full training file is validated before selecting any smoke prefix. System,
+user, and assistant-header tokens have label `-100`; assistant JSON, end-of-turn,
+and the template's **trailing newline remain supervised**. Padding labels are
+`-100`. Python lists become CPU `torch.long` tensors only in the Trainer collator;
+Trainer moves batches to the GPU and applies the model's standard causal loss.
+
+The new optional `fine-tuning` extra pins PyTorch 2.8.0, Transformers 4.57.1,
+PEFT 0.17.1, Accelerate 1.10.1, and bitsandbytes 0.48.1. Existing extras are unchanged.
+The runtime requires those exact versions (CUDA wheel suffixes are recorded and
+allowed). Compatibility was reviewed against the versioned
+[Transformers dependencies](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/dependency_versions_table.py),
+[PEFT requirements](https://github.com/huggingface/peft/blob/v0.17.1/setup.py),
+[Accelerate requirements](https://github.com/huggingface/accelerate/blob/v1.10.1/setup.py),
+and [bitsandbytes requirements](https://github.com/bitsandbytes-foundation/bitsandbytes/blob/0.48.1/pyproject.toml).
+This is source/API review, **not a tested GPU environment**. No packages were
+installed and no training was run while implementing it. Before a future run,
+prepare a separate environment with the extra and a suitable CUDA-enabled PyTorch
+wheel. [PyTorch 2.8.0 provides CUDA 12.6/12.8/12.9 wheels](https://pytorch.org/get-started/previous-versions/#v280);
+check the HPC driver and the matching bitsandbytes native library first. Transitive
+packages are not fully locked; all installed package versions are recorded.
+
+The fixed base is `Qwen/Qwen2.5-3B-Instruct` at revision
+`aa8e72537993ba99e69dfaafa59ed015b17504d1`, with NF4 4-bit weights, double
+quantization, BF16 compute, and eager attention. Exactly one visible NVIDIA CUDA
+GPU/process with native BF16 (Ampere or newer) is required; there is no CPU/FP16,
+multi-GPU, or automatic batch-size fallback. The initial target is an A100 40GB.
+
+| Initial configuration | Value |
+|---|---|
+| LoRA | rank 16, alpha 32, dropout 0.05, bias none |
+| Target projections | q/k/v/o and gate/up/down |
+| Learning rate / epochs | `2e-4` / 3 |
+| Micro batch / accumulation | 1 / 16; nominal effective batch 16 |
+| Sequence limit | 2,048; reject overflow, never truncate |
+| Gradient checkpointing | enabled; `use_reentrant=False`; model cache disabled |
+| Optimizer | `adamw_torch`; betas 0.9/0.999, epsilon `1e-8`, weight decay 0 |
+| Schedule / clipping | linear, warmup ratio 0.03, gradient norm 1.0 |
+| Ordering / seed | sequential file order each epoch, workers 0, seed 42 |
+
+These values are **initial experimental choices, not scientifically optimized**.
+An incomplete final accumulation window is retained and has a smaller effective
+batch. Sequential ordering also preserves the dataset's relation grouping; its
+effect is a methodological limitation. Strict PyTorch determinism and disabled
+TF32 do not guarantee bitwise reproducibility across GPUs, libraries, or custom
+bitsandbytes kernels. Memory requirements and native-kernel execution remain
+unverified. The separate identity-overlap audit is available in
+`fine_tuning_data.audit_validation_overlap()`; training does not read validation
+labels or select checkpoints using validation performance.
+
+Future HPC invocation, **not executed during implementation** (set the three
+environment paths to your allocated scratch directories; no username is built in):
+
+```sh
+cd ~/LLM-KBC-Thesis
+python -m llm_kbc.qlora_train --data-dir data/lm_kbc_2026 \
+  --output-dir results/qlora_v1_smoke --smoke \
+  --cache-dir "${HF_CACHE:?Set the shared model cache}" \
+  --checkpoint-dir "${CHECKPOINT_ROOT:?Set checkpoint root}/qlora_v1_smoke" \
+  --tmp-dir "${TMP_ROOT:?Set temporary-file root}"
+```
+
+`--smoke` explicitly uses the first eight training records, one epoch, accumulation
+4 (nominal effective batch 4), and a two-optimizer-step limit. Other hyperparameters
+remain as above. This area-only prefix is not representative of every relation.
+For a later full run, omit `--smoke` and use new output/checkpoint names.
+`--config path.json` accepts explicit `TrainingConfig` overrides; unknown/invalid
+fields fail, and combining it with `--smoke` is rejected. A positive `max_steps`
+explicitly overrides the epoch-based stopping condition. Model/revision,
+quantization, BF16, attention, and projection targets are fixed for this version.
+
+Output and checkpoint directories must be new, even if an existing directory is
+empty. There is no automatic resume or overwrite. Checkpoints are saved each epoch
+and retained; no checkpoint retention/deletion policy is applied. Final LoRA
+weights/config are saved in `adapter.incomplete` and renamed to `adapter` only
+after both files are verified. Base weights are never merged, saved, or modified.
+`metadata.json` records status, source Git commit/dirty flag and hashes, training
+dataset/feature hashes, selected identities, tokenizer template hash, all package
+versions, GPU/runtime details, quantization/LoRA/training settings, and training
+loss/steps/log history. These are training results, not benchmark evaluation.
+Failures retain diagnostics, checkpoints, and possibly an incomplete adapter.
+Metadata updates and final adapter rename are not one filesystem transaction;
+only `status: complete` establishes success. SIGKILL can leave `status: running`,
+even with a saved adapter. Use a clean committed checkout for reported experiments,
+retain the run artifacts and environment, and keep scratch paths separate from
+datasets, source, and experiment outputs. Cache/tmp roots may already exist and
+are created as needed only during an actual run; temporary files are not deleted
+by this command. Nothing in this implementation launches a job automatically.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

@@ -528,6 +528,58 @@ datasets, source, and experiment outputs. Cache/tmp roots may already exist and
 are created as needed only during an actual run; temporary files are not deleted
 by this command. Nothing in this implementation launches a job automatically.
 
+## QLoRA adapter inference (implementation only)
+
+`llm_kbc.qlora_inference` loads the original pinned Qwen base on CUDA in FP16,
+attaches a local PEFT LoRA adapter, and leaves it **unmerged**. It uses the unchanged
+zero-shot v2 system prompt, questions, base tokenizer, and chat template. There
+are no few-shot demonstrations or evaluation labels in prompts. Dataset inputs
+contribute only `SubjectEntity` and `Relation`; gold fields can be absent or nested
+and are not accessed. Generation matches zero-shot's seed 0, greedy decoding,
+eager attention, batch size 1, deterministic PyTorch flags, and default 512-token
+output budget. Model/revision are fixed; token/example limits are explicit CLI
+options. Context overflow fails instead of truncating inputs.
+
+Use the existing `fine-tuning` environment, which includes PEFT 0.17.1; this command
+does not use bitsandbytes quantization or require BF16 hardware. Both base and
+adapter tensors use FP16, with PEFT's automatic FP32 adapter promotion disabled.
+The original QLoRA training used an NF4/BF16 base; evaluating the adapter on the
+FP16 base is an explicit experimental condition, not numerically identical to
+training-time quantization. GPU execution and memory use have not been verified
+locally; no inference or evaluation was run while implementing this command.
+
+Point `--adapter-dir` at the completed training run's `adapter` directory. Require
+`adapter_config.json` and `adapter_model.safetensors`; base identifier, exact
+revision, LoRA type, and causal-LM task must agree. Missing adapter tensors or
+shape mismatches fail, and files are hashed before/after model loading to detect
+ordinary concurrent changes. Compatibility checks do not certify training
+completion or artifact authenticity: retain/check the training run's completed
+metadata and archived hashes too. Adapter files are read-only inputs; predictions
+and the shared model cache must be outside that directory.
+
+Future smoke command (not executed):
+
+```sh
+python -m llm_kbc.qlora_inference \
+  --dataset data/lm_kbc_2026/val.jsonl --output results/qlora_val_smoke.jsonl \
+  --adapter-dir /path/to/completed/run/adapter --cache-dir /path/to/huggingface \
+  --max-examples 5 --max-new-tokens 512
+```
+
+For full validation, omit `--max-examples` and choose a new output path. Do not
+score a five-record smoke file as full validation or evaluate withheld test labels.
+Predictions keep the existing flat-string schema. The shared zero-shot runner
+preserves numeric token spelling, converts malformed outputs to explicit `[]`
+abstentions, flushes every raw response, and retains failure diagnostics. It
+publishes only complete, validated, ordered predictions. Existing predictions
+and `.raw.jsonl`, `.failures.jsonl`, or `.metadata.json` sidecars are refused.
+Metadata records base revision, adapter path/config and weight/config SHA256s,
+dataset/output hashes, generation settings, prompt version/hash, source hashes,
+chat-template hash, package versions, and GPU details. Archive all four artifacts
+with the adapter/training provenance. There are no retries, repairs, scoring,
+merging, or resume operations. Cross-hardware bitwise identity and multi-file
+power-loss atomicity are not guaranteed, as with the zero-shot pipeline.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

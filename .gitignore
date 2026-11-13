@@ -34,6 +34,7 @@ data/*
 !data/.gitkeep
 results/*
 !results/.gitkeep
+experiments/few_shot_v2/
 
 # Model downloads, caches, and weights
 models/

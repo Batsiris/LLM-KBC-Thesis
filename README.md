@@ -374,6 +374,114 @@ demonstration length caps, truncation risk for long award answers, format validi
 and hardware/library differences alongside scores. CPU tests use fake generation;
 no actual few-shot GPU inference or evaluation has been performed during development.
 
+## Few-shot Prompting v2: 1-shot and 5-shot
+
+`few_shot_v2.py` prepares the two new conditions; `few_shot_v2_inference.py`
+reuses the unchanged zero-shot GPU generator, strict numeric-token parser, and
+audited artifact runner. **Reuse the completed v1 3-shot results; do not rerun
+3-shot.** The new CLI accepts only `--shots {1,5}`. No existing experiment or
+prompt implementation is changed, and no format repair is applied.
+
+The fixed `relation-aware-1-or-5-shot-v2` policy uses only the reviewed training
+snapshot (SHA256 above). Eligibility, canonical first-alias labels, numeric
+validation, and whole-answer caps (32 objects / 1,024 serialized UTF-8 bytes)
+are identical to v1. No strings, order, numeric spelling, or units are changed.
+
+- **1-shot:** sort eligible nonempty examples by `(object count, original
+  subject)`, or `(finite decimal value, original subject)` for numeric relations.
+  Choose rank `(n-1)//2`, the lower median over **records**, not distinct
+  cardinalities. If all eligible examples are empty, choose the first original
+  subject in Unicode code-point order. This intentionally prioritizes a
+  nonempty representative answer over teaching abstention in the single slot.
+- **5-shot:** call the unchanged v1 selector for the first three examples,
+  preserving their exact order. For nonnumeric relations, rank all eligible
+  records (including empties) by `(object count, original subject)`. Append the
+  nearest unused ranks to `(n-1)//4` and `3*(n-1)//4`, in that order; ties choose
+  the lower rank. For numeric relations, rank nonempty records by `(finite
+  decimal value, original subject)` and compute the same targets using their
+  count. Prefer unused nonempty records; if exhausted, use empty records ordered
+  by original subject after the nonempty ranks. Existing v1 requirements still
+  apply, including two nonempty numeric candidates when empties exist.
+- Require enough eligible distinct records in every relation; otherwise fail.
+  Ties never depend on training file order. Neither selection receives query
+  gold, predictions, or metrics, and leakage never triggers replacement.
+
+The actual training snapshot selects the following subjects. The two additions
+are in prompt order; each 5-shot prefix is exactly the v1 table above.
+
+| Relation | 1-shot | 5-shot additions (4th; 5th) |
+|---|---|---|
+| countryLandBordersCountry | Vietnam (3 objects) | Macau (1); Argentina (5) |
+| personHasCityOfDeath | Jūrō Kara (1) | Lasse Åberg (0); Liudmila Belavenets (1) |
+| hasCapacity | Cowboy Stadium in Louisiana (`12226`) | Luther "Nick" Jeralds Stadium in North Carolina (`5520`); American Legion Memorial Stadium in North Carolina (`21000`) |
+| awardWonBy | Fulbright Prize (27) | Fulbright Prize (27); Premier League Player of the Season (27) |
+| companyTradesAtStockExchange | Nautilus, Inc. (1) | PACCO (0); Sodexo (1) |
+| hasArea | Zakynthos (`405.55`) | Lake Iseo (`65.3`); Kosovo (`10909.02992`) |
+
+Every prompt has the unchanged zero-shot system message, exactly `shots`
+same-relation user/assistant turn pairs with complete JSON string arrays, and a
+final query (4 or 12 messages). Only input subject/relation fields are used.
+Before loading GPU weights, the full input file is checked for unique normalized
+identities, demonstration pair leakage, and exact templated token length without
+truncation. Cross-relation subject-only overlaps are reported. Matching remains
+NFKC/casefold/whitespace based, without alias resolution or contamination checks.
+
+A CPU-only preflight using the cached pinned tokenizer, Transformers 4.57.1,
+tokenizers 0.22.2, and Jinja2 3.1.6 checked all 475 local validation inputs
+(input-file SHA256 `ba86b53ac38eb4b23b80391b291e5987ff4bbfe79827596fc09751b1bb0ce2be`).
+The 1-shot range is **124–305 tokens**, and 5-shot is **227–959**; the largest
+prompt plus the fixed 512-token output budget is 1,471, below 32,768.
+Neither set has normalized pair or subject-only overlap with these inputs.
+These are prompt measurements, not inference or evaluation results.
+
+### Future GPU commands
+
+Use the existing inference environment and run from a Git checkout on local
+storage, not a Drive mount. No new dependencies or notebook are required.
+Model/revision, FP16, eager attention, batch size 1, deterministic runtime,
+greedy generation, and **512 new tokens** are fixed exactly as in zero-shot/v1.
+For example, after cloning and installing the existing `[inference]` extra:
+
+```bash
+# Smoke runs: preflight all inputs, then generate the first five only.
+python -m llm_kbc.few_shot_v2_inference --shots 1 \
+  --data-dir data/lm_kbc_2026 --dataset data/lm_kbc_2026/val.jsonl \
+  --output experiments/few_shot_v2/1_shot_smoke.jsonl --max-examples 5
+python -m llm_kbc.few_shot_v2_inference --shots 5 \
+  --data-dir data/lm_kbc_2026 --dataset data/lm_kbc_2026/val.jsonl \
+  --output experiments/few_shot_v2/5_shot_smoke.jsonl --max-examples 5
+
+# Separate complete validation runs, after reviewing smoke artifacts.
+python -m llm_kbc.few_shot_v2_inference --shots 1 \
+  --data-dir data/lm_kbc_2026 --dataset data/lm_kbc_2026/val.jsonl \
+  --output experiments/few_shot_v2/1_shot_val.jsonl
+python -m llm_kbc.few_shot_v2_inference --shots 5 \
+  --data-dir data/lm_kbc_2026 --dataset data/lm_kbc_2026/val.jsonl \
+  --output experiments/few_shot_v2/5_shot_val.jsonl
+```
+
+Omitting `--output` defaults to `experiments/few_shot_v2/1_shot.jsonl` or
+`5_shot.jsonl`. Existing predictions or any of the four sidecars are refused.
+Archive predictions plus `.manifest.json`, `.metadata.json`, `.raw.jsonl`, and
+`.failures.jsonl` together. The manifest records shot count, selection/prompt
+versions, ordered demonstrations and prompts, training/input SHA256, pinned and
+resolved model revision, tokenizer versions and chat-template hash, source commit
+and hashes, generation settings, and runtime information. Raw/failure logging,
+numeric normalization, explicit parse-failure abstentions, completion status,
+and final ordered coverage/schema validation use the existing zero-shot runner.
+OOM/interruption retains diagnostics but publishes no incomplete predictions.
+As before, multi-file transactions, concurrent-writer safety, and power-loss
+durability are not guaranteed. Use fresh filenames and archive completed runs.
+
+This is an exploratory demonstration-count study on already inspected validation
+inputs. The 1-shot example need not belong to the v1 prefix, and adding two
+examples also changes their identities, prompt length, and empty-answer exposure;
+this is not an isolated causal estimate of count alone. Reusing all five eligible
+awards also increases award prompt length. The unchanged 512-token budget can
+truncate long award answers, even though input contexts fit. GPU behavior remains
+unverified for v2. Do not score smoke outputs or withheld test labels, select
+demonstrations by validation performance, or alter earlier baseline artifacts.
+
 ## Exploratory format-repair ablation
 
 This independent post-processing ablation uses saved generations from an
@@ -587,14 +695,14 @@ and few-shot inference pipelines, and synthetic tests are implemented. LM-KBC 20
 dataset files are available locally. Generation and evaluation are separate
 commands; no experiment orchestration framework is implemented.
 
-**Zero-shot v2 inference and its official LM-KBC 2026 evaluation, together with
-Format Repair v1, have been completed externally in Google Colab. Their artifacts
-are archived in Google Drive. Few-shot GPU inference has not yet been performed.**
-Local few-shot verification uses CPU tokenizer preflight and synthetic generation
-tests; it does not establish GPU execution or benchmark performance.
+**Zero-shot v2, Few-shot v1 (3-shot), and QLoRA have completed validation
+evaluation, as reported by the researcher; Format Repair v1 is also complete.**
+The existing external artifacts remain unchanged. Few-shot v2 (1-shot/5-shot)
+has only CPU tokenizer preflight and synthetic generation verification; no v2
+GPU inference or evaluation has been performed.
 
-Planned experiments include running the few-shot condition and further
-relation-aware prompting; fine-tuning and retrieval-augmented generation;
+Planned experiments include the new few-shot counts and further
+relation-aware prompting; additional fine-tuning and retrieval-augmented generation;
 self-consistency and candidate aggregation; evidence-grounded factual verification;
 and ontology-aware semantic validation. These remain research directions beyond
 the implemented inference pipelines.
@@ -604,12 +712,14 @@ the implemented inference pipelines.
 - `src/llm_kbc/`: inspector, prediction parser, zero-shot inference, and evaluation interface/CLI.
 - `src/llm_kbc/few_shot.py`: training-only demonstration selection and prompt preparation.
 - `src/llm_kbc/few_shot_inference.py`: fixed few-shot inference CLI and reproducibility manifest.
+- `src/llm_kbc/few_shot_v2.py`, `few_shot_v2_inference.py`: separate 1/5-shot preparation and inference; v1 remains unchanged.
 - `src/llm_kbc/_vendor/`: unchanged upstream evaluator with license and provenance.
 - `tests/`: CLI, schema, evaluation, inference, format-repair, and prompt-selection tests.
 - `docs/`: evaluation usage, provenance, and metric definitions.
 - `configs/`: reserved for experiment configuration.
 - `data/`: local datasets; contents are ignored by Git.
 - `results/`: reserved for generated results; contents are ignored by Git.
+- `experiments/few_shot_v2/`: future 1/5-shot artifacts; ignored by Git.
 
 The project uses setuptools with a `src` layout and no base runtime dependencies.
 Pytest is an optional development dependency; evaluation optionally requires

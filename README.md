@@ -688,6 +688,108 @@ with the adapter/training provenance. There are no retries, repairs, scoring,
 merging, or resume operations. Cross-hardware bitwise identity and multi-file
 power-loss atomicity are not guaranteed, as with the zero-shot pipeline.
 
+## RAVEC-00: offline candidate and error audit
+
+This CPU-only development analysis compares immutable, complete 5-shot and QLoRA
+validation predictions. It does not run inference, retrieval, training, repairs,
+or a controller. Gold labels are used **only for explicit offline scoring/error
+analysis**, never for constructing candidates or runtime controller features.
+The validation split has already been inspected; this is not held-out testing.
+
+Use the existing `evaluation` dependency group. On Aristotle, activate the
+project's existing Python environment and run the following Bash command from
+`~/LLM-KBC-Thesis`. Set the three environment variables to the real archived
+prediction paths and a **new** output path in an existing local/scratch directory:
+the archive locations are not available in this checkout, so they are not guessed.
+
+```sh
+cd ~/LLM-KBC-Thesis
+: "${FIVE_SHOT:?Set to the archived complete 5-shot prediction JSONL}"
+: "${QLORA:?Set to the archived complete QLoRA prediction JSONL}"
+: "${AUDIT_OUT:?Set to a new audit JSON path in an existing output directory}"
+python -m llm_kbc.candidate_audit \
+  --gold data/lm_kbc_2026/val.jsonl \
+  --five-shot "$FIVE_SHOT" --qlora "$QLORA" \
+  --five-shot-raw "${FIVE_SHOT}.raw.jsonl" \
+  --five-shot-failures "${FIVE_SHOT}.failures.jsonl" \
+  --five-shot-metadata "${FIVE_SHOT}.metadata.json" \
+  --qlora-raw "${QLORA}.raw.jsonl" \
+  --qlora-failures "${QLORA}.failures.jsonl" \
+  --qlora-metadata "${QLORA}.metadata.json" \
+  --null-iterations 1000 --seed 0 \
+  --expected-queries 475 --expected-raw-additions 381 --expected-tp-gain 77 \
+  --output "$AUDIT_OUT"
+```
+
+Sidecars are optional **explicit inputs**, not automatically discovered. If one
+is unavailable, omit its option: the report says `missing`, rather than assuming
+zero failures. If an explicitly supplied file is missing/inconsistent, the audit
+fails. Add `--union /absolute/path/to/archived_union.jsonl` to compare the archived
+union's object order and official scores with the deterministic constructed union.
+The reference figures above are researcher-reported targets, **not locally
+reproduced findings**. A mismatch is saved in the report and returns exit code 1;
+invalid inputs return 2 without publishing output. Success returns 0.
+
+One full-precision JSON report contains hashes/byte sizes/paths for every supplied
+artifact, scorer provenance, code hash, Python/pandas versions, query-level
+candidate attribution, relation-level counts, macro/micro metrics, diagnostics,
+null controls, and a concise Markdown `summary` also printed to stdout. No timestamp
+or random global state is used. Identical files, paths, configuration and software
+produce identical output. The output parent must exist. A same-directory temporary
+file and exclusive hard-link publication refuse overwrites; use a filesystem that
+supports hard links, rather than Google Drive FUSE. Existing artifacts are read
+only and hashed again before publication to detect ordinary concurrent changes.
+Hashes establish identity/integrity, not authenticity; compare them against the
+independently retained archives. Missing metadata hashes remain unverified.
+
+Accounting policy (`ravec-00-candidate-audit-v1`):
+
+- Gold must be labeled `val.jsonl`; public test paths/links are rejected. Both
+  prediction files must have the exact gold identities in file order, with no
+  duplicate subject–relation rows. Identity keys are exact, as in the official
+  evaluator; object normalization is not applied to query identities.
+- The union keeps 5-shot strings first, then unseen exact QLoRA strings in their
+  original order. Raw additions count **distinct exact strings per query** absent
+  from 5-shot. Occurrence counts, exact duplicates and normalized duplicates are
+  reported separately. Normalized additions use upstream `normalize_string`,
+  not numeric equivalence or gold alias groups. No original prediction is changed.
+- All scoring, deduplication, alias matching, numeric 5% tolerance, empty-answer
+  conventions and aggregation call the unchanged official evaluator. Reports
+  retain its numeric zero/negative-gold and normalization edge cases described in
+  [evaluation documentation](docs/evaluation.md). Metrics are official row-macro
+  and count-micro, including per-relation metrics.
+- Each added raw string is scored alone for **individual matchability** and in
+  the growing prefix for **marginal TP credit**. Prefix credit depends on the
+  fixed source/order; it is not a unique gold assignment or factual certification.
+  Aliases can each match individually but collectively receive one TP. Therefore
+  net TP gain divided by raw additions is **not candidate precision**. FP/FN counts
+  are official unmatched prediction/gold counts, not adjudicated factual errors.
+- Available raw logs are reparsed with the existing strict parser, including
+  numeric-token spelling, and checked against predictions and failure logs.
+  Partial raw logs are flagged, never treated as complete. Metadata output/dataset
+  hashes and available coverage/count fields are checked. Empty arrays alone
+  cannot distinguish a deliberate empty answer from parse-failure abstention.
+  An unclosed failed array is only a possible incomplete-JSON signal: current
+  raw logs lack generated-token counts/finish reasons, so budget exhaustion cannot
+  be confirmed. Missing manifests/tokenizer files are not implicitly read.
+- Numeric nulls shuffle whole gold alias groups across queries, separately
+  **within each numeric relation** and **within relation plus magnitude decade**
+  (`floor(log10(first gold alias))`). Pools, candidate order and official scoring
+  stay fixed. Only positive finite singleton gold is eligible; excluded zero,
+  negative, nonfinite, unparseable, empty or multi-object gold remains in the real
+  evaluation. The same eligible subset supplies observed and shuffled TP counts.
+  Seeded permutations retain fixed points; report fixed-point rates, bucket sizes
+  and movable queries. Small/singleton bins can make a control uninformative.
+  The report includes null means, empirical 2.5/97.5 percentile bounds and a
+  plus-one upper-tail fraction for TP gain. These are descriptive diagnostics,
+  **not calibrated significance tests** or proof that correct numbers were known.
+
+Interpret relation-level headroom before choosing verification versus discovery:
+unmatched additions and FP growth motivate verification; nontrivial incremental
+coverage surviving numeric controls motivates testing targeted discovery. These
+are proposed follow-up experiments, not evidence of RAVEC novelty or superiority.
+No archived 475-record audit has been executed in this local checkout.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

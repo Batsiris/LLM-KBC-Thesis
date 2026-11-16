@@ -86,6 +86,18 @@ python -m pip install -e ".[dev,evaluation,preprocessing]"
 python -m pytest
 ```
 
+## Multi-model prompting benchmark
+
+Use `python -m llm_kbc.benchmark` for explicit model/revision-configurable
+zero-, 1-, 3-, and 5-shot comparisons. It reuses the committed prompt policies
+(v1 for 3-shot, v2 for 1/5-shot), strict parser, audited output writer and official
+offline evaluator. Existing pinned Qwen runners and archived results are unchanged.
+Help and offline dry-run require no GPU dependencies or network access.
+See [multi-model benchmark commands and protocol](docs/model_benchmark.md) for
+all four conditions, isolated run paths, reproducibility metadata, offline
+reporting, compatibility limits and model-selection/held-out safeguards.
+No candidate models are selected automatically and no new inference is run.
+
 ## Zero-shot inference in Google Colab
 
 After committing and pushing this implementation yourself, select a **T4 GPU**

@@ -79,9 +79,10 @@ known edge cases, and adapter architecture. Metrics from different benchmarks
 may have different matching and aggregation semantics and must not be directly
 compared without qualification.
 
-Run the complete test suite with both `dev` and `evaluation` extras installed:
+Run the complete test suite with the `dev`, `evaluation` and `preprocessing` extras installed:
 
 ```sh
+python -m pip install -e ".[dev,evaluation,preprocessing]"
 python -m pytest
 ```
 

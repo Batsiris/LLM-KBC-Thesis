@@ -1,8 +1,10 @@
 """CPU-only benchmark contract checks; all Hub/model operations are stand-ins."""
 
 import json
+import hashlib
 import subprocess
 import sys
+import warnings
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -56,7 +58,14 @@ class Tokenizer:
                 def to(self, device):
                     assert device == "cuda"
                     return self
-            return Batch(input_ids=SimpleNamespace(shape=(1, 20)), attention_mask="mask")
+            class Tensor:
+                shape = (1, 20)
+
+                def __getitem__(self, index):
+                    assert index == 0
+                    return SimpleNamespace(tolist=lambda: list(range(20)))
+
+            return Batch(input_ids=Tensor(), attention_mask="mask")
         return list(range(20))
 
     def decode(self, tokens, **kwargs):
@@ -79,6 +88,7 @@ def cpu_runtime(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(
         AutoConfig=SimpleNamespace(from_pretrained=config), AutoTokenizer=SimpleNamespace(from_pretrained=tokenizer),
+        AutoModelForCausalLM=SimpleNamespace(),
     ))
     monkeypatch.setattr(bm, "_source_provenance", lambda: {"commit": "b" * 40, "working_tree_dirty": True, "files_sha256": {}})
 
@@ -170,7 +180,8 @@ def test_audited_run_metadata_failure_policy_and_no_overwrite(data, tmp_path, cp
     assert metadata["dataset"]["sha256"] == bm._sha256(dataset)
     manifest = json.loads(Path(str(output) + ".manifest.json").read_text())
     assert manifest["configuration"] == {"model": config.model, "revision": SHA, "shots": shots, "seed": 17,
-                                         "max_new_tokens": 512, "dtype": "float16", "context_limit": None}
+                                         "max_new_tokens": 512, "dtype": "float16", "context_limit": None,
+                                         "quantization": "none", "thinking": "default", "determinism": "strict"}
     assert manifest["runtime"]["preflight_records"] == 6
     assert manifest["tokenizer_checked"]
     assert manifest["runtime"]["chat_template"] == "native-template"
@@ -307,6 +318,7 @@ def torch_runtime(monkeypatch):
         generation_config = SimpleNamespace(eos_token_id=[11, 12])
 
         def to(self, device):
+            events["to"] = device
             self.device = device
             return self
 
@@ -330,13 +342,20 @@ def torch_runtime(monkeypatch):
 
     def load(model, **kwargs):
         events["load"] = (model, kwargs)
-        return Model()
+        instance = Model()
+        instance.device = "cuda"
+        events["instance"] = instance
+        return instance
 
     torch = SimpleNamespace(
         float16="fp16", bfloat16="bf16", manual_seed=lambda seed: events.update(seed=seed),
-        use_deterministic_algorithms=lambda flag: events.update(deterministic=flag), inference_mode=nullcontext,
+        use_deterministic_algorithms=lambda flag, **kw: events.update(deterministic=flag, deterministic_options=kw), inference_mode=nullcontext,
         cuda=SimpleNamespace(is_available=lambda: True, is_bf16_supported=lambda: True,
-                             synchronize=lambda: None, get_device_name=lambda _: "mock GPU"),
+                             synchronize=lambda: None, get_device_name=lambda _: "mock GPU",
+                             get_device_properties=lambda _: SimpleNamespace(total_memory=40 * 1024**3),
+                             get_device_capability=lambda _: (8, 0), mem_get_info=lambda _: (39 * 1024**3, 40 * 1024**3),
+                             reset_peak_memory_stats=lambda _: events.update(memory_reset=True),
+                             max_memory_allocated=lambda _: 123456, max_memory_reserved=lambda _: 234567),
         version=SimpleNamespace(cuda="mock CUDA"),
         backends=SimpleNamespace(cudnn=SimpleNamespace(version=lambda: 1), cuda=SimpleNamespace(matmul=SimpleNamespace())),
     )
@@ -435,3 +454,259 @@ raise SystemExit(main(sys.argv[1:]))
         completed = subprocess.run([sys.executable, "-B", "-c", script, *arguments], capture_output=True, text=True, timeout=15)
         assert completed.returncode == 0, completed.stderr
     assert not (tmp_path / "runs").exists()
+
+
+def install_quantization_standins(monkeypatch):
+    class BitsConfig:
+        def __init__(self, **kwargs):
+            self.values = kwargs
+
+        def to_dict(self):
+            return self.values
+
+    monkeypatch.setitem(sys.modules, "accelerate", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", SimpleNamespace())
+    monkeypatch.setattr(sys.modules["transformers"], "BitsAndBytesConfig", BitsConfig, raising=False)
+
+
+@pytest.mark.parametrize("model", bm.TARGETS)
+@pytest.mark.parametrize("quantization", ("none", "nf4"))
+def test_target_architecture_loading_and_quantization(torch_runtime, monkeypatch, model, quantization):
+    events, torch = torch_runtime
+    fake = sys.modules["transformers"]
+    model_type, class_name, _ = bm.TARGETS[model]
+    setattr(fake, class_name, fake.AutoModelForCausalLM)
+    # Use a larger synthetic GPU for the unquantized wiring test; 40 GB rejection is tested separately.
+    torch.cuda.mem_get_info = lambda _: (100 * 1024**3, 100 * 1024**3)
+    install_quantization_standins(monkeypatch)
+    config = bm.RunConfig(model, SHA, 3, dtype="bfloat16", quantization=quantization)
+    preflight = {"model_type": model_type, "context_limit": 4096,
+                 "chat_template_configuration": {"tokenize": True, "add_generation_prompt": True, "truncation": False}}
+    generate, metadata = bm._load_generator(config, Tokenizer(), preflight, None)
+    assert generate(zero_shot.build_messages("A", "hasArea")) == '["result"]'
+    assert metadata["loading_class"] == class_name
+    assert events["load"][1]["revision"] == SHA
+    assert metadata["generation"]["eos_token_id"] == [11, 12]
+    assert metadata["gpu_total_memory_bytes"] == 40 * 1024**3
+    assert metadata["gpu_compute_capability"] == [8, 0]
+    assert metadata["gpu_memory"] == {"peak_allocated_bytes": 123456, "peak_reserved_bytes": 234567}
+    assert events["memory_reset"]
+    if quantization == "nf4":
+        expected = {"load_in_4bit": True, "bnb_4bit_quant_type": "nf4", "bnb_4bit_use_double_quant": True,
+                    "bnb_4bit_compute_dtype": "bf16"}
+        assert metadata["quantization"] == expected
+        assert events["load"][1]["quantization_config"].to_dict() == expected
+        assert events["load"][1]["device_map"] == {"": 0}
+        assert "to" not in events  # Moving an already dispatched quantized model is forbidden.
+    else:
+        assert metadata["quantization"] is None and events["to"] == "cuda"
+
+
+@pytest.mark.parametrize("model", list(bm.TARGETS)[1:])
+def test_40gb_rejects_impossible_unquantized_targets_before_weights(torch_runtime, model):
+    events, _ = torch_runtime
+    model_type, name, _ = bm.TARGETS[model]
+    fake = sys.modules["transformers"]
+    setattr(fake, name, fake.AutoModelForCausalLM)
+    with pytest.raises(bm.Error, match="weights alone exceed"):
+        bm._load_generator(bm.RunConfig(model, SHA, 0, dtype="bfloat16"), Tokenizer(), {"model_type": model_type}, None)
+    assert "load" not in events
+
+
+@pytest.mark.parametrize("model", ("Qwen/Qwen3.5-9B", "google/gemma-4-31B-it"))
+def test_legacy_environment_fails_before_config_download(data, cpu_runtime, model):
+    directory, dataset = data
+    config = bm.RunConfig(model, SHA, 0)
+    prompts = bm.prepare(dataset, directory, config)["prompts"]
+    with pytest.raises(bm.Error, match="isolated benchmark-modern"):
+        bm._tokenizer_preflight(config, prompts, None)
+    assert "config" not in cpu_runtime and "tokenizer" not in cpu_runtime
+
+
+@pytest.mark.parametrize("model", ("Qwen/Qwen3.5-9B", "google/gemma-4-31B-it"))
+@pytest.mark.parametrize("thinking", ("default", "enabled", "disabled"))
+def test_modern_text_only_native_chat_and_thinking(data, cpu_runtime, monkeypatch, model, thinking):
+    directory, dataset = data
+    fake = sys.modules["transformers"]
+    model_type, name, _ = bm.TARGETS[model]
+    setattr(fake, name, SimpleNamespace())
+    fake.AutoConfig.from_pretrained = lambda *a, **kw: SimpleNamespace(
+        _commit_hash=SHA, model_type=model_type, architectures=[name],
+        get_text_config=lambda: SimpleNamespace(max_position_embeddings=262144))
+    monkeypatch.setattr(Tokenizer, "get_chat_template", lambda self: "native enable_thinking template")
+    chats = []
+    apply = Tokenizer.apply_chat_template
+
+    def capture(self, messages, **kwargs):
+        chats.append(kwargs)
+        return apply(self, messages, **kwargs)
+
+    monkeypatch.setattr(Tokenizer, "apply_chat_template", capture)
+    config = bm.RunConfig(model, SHA, 5, thinking=thinking)
+    prompts = bm.prepare(dataset, directory, config)["prompts"]
+    _, preflight = bm._tokenizer_preflight(config, prompts, None)
+    assert preflight["model_type"] == model_type and preflight["loading_class"] == name
+    assert preflight["vision_weights_loaded"] and preflight["text_only_inputs"]
+    assert preflight["architectures"] == [name]
+    assert preflight["chat_backend"] == "native-jinja"
+    assert len(preflight["prompt_token_hashes"]) == len(prompts)
+    assert all(row["rendered_chat"] and row["input_ids_sha256"] for row in prompts)
+    if thinking == "default":
+        assert all("enable_thinking" not in kw for kw in chats)
+    else:
+        assert all(kw["enable_thinking"] == (thinking == "enabled") for kw in chats)
+
+
+@pytest.mark.parametrize("legacy_api", (True, False))
+def test_mistral_native_tekken_chat_without_jinja(data, cpu_runtime, monkeypatch, tmp_path, legacy_api):
+    directory, dataset = data
+    model = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    fake = sys.modules["transformers"]
+    setattr(fake, "Mistral3For" "ConditionalGeneration", SimpleNamespace())
+    fake.AutoConfig.from_pretrained = lambda *a, **kw: SimpleNamespace(
+        _commit_hash=SHA, model_type="mistral3", architectures=["Mistral3For" "ConditionalGeneration"],
+        get_text_config=lambda: SimpleNamespace(max_position_embeddings=131072))
+    tekken = tmp_path / "tekken.json"
+    tekken.write_text("fixture tokenizer", encoding="utf-8")
+    events = {}
+
+    def download(repo, filename, **kwargs):
+        events["download"] = (repo, filename, kwargs)
+        return str(tekken)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
+
+    class NativeTokenizer:
+        # Real 4.57.1 MistralCommonTokenizer has no get_chat_template/special_tokens_map.
+        model_max_length = 10**30
+        eos_token_id = 2
+        pad_token_id = -1
+
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            assert Path(path) == tekken.parent
+            assert kwargs == {"local_files_only": True}
+            return cls()
+
+        def apply_chat_template(self, messages, *, tokenize=True, truncation=False, return_dict=False):
+            assert not truncation and not return_dict
+            events.setdefault("messages", []).append(messages)
+            return list(range(20)) if tokenize else "\n".join(row["content"] for row in messages)
+
+    if not legacy_api:
+        legacy_apply = NativeTokenizer.apply_chat_template
+
+        def modern(self, messages, *, add_generation_prompt=False, **kwargs):
+            assert add_generation_prompt
+            return legacy_apply(self, messages, **kwargs)
+
+        NativeTokenizer.apply_chat_template = modern
+    setattr(fake, "MistralCommonTokenizer" if legacy_api else "MistralCommonBackend", NativeTokenizer)
+    config = bm.RunConfig(model, SHA, 3)
+    prompts = bm.prepare(dataset, directory, config)["prompts"]
+    _, preflight = bm._tokenizer_preflight(config, prompts, None)
+    assert events["download"] == (model, "tekken.json", {"revision": SHA, "cache_dir": None})
+    assert preflight["chat_backend"] == "mistral-common"
+    assert preflight["chat_template"] is preflight["chat_template_sha256"] is None
+    assert preflight["tokenizer_file_sha256"] == bm._sha256(tekken)
+    assert preflight["special_tokens_map"] is None
+    assert preflight["context_limit"] == 131072
+    assert ("add_generation_prompt" in preflight["chat_template_configuration"]) != legacy_api
+    with pytest.raises(bm.Error, match="no enable_thinking switch"):
+        bm._tokenizer_preflight(replace(config, thinking="disabled"), prompts, None)
+
+
+def test_missing_quantization_dependency_never_loads_weights(torch_runtime, monkeypatch):
+    events, _ = torch_runtime
+    monkeypatch.setitem(sys.modules, "accelerate", None)
+    with pytest.raises(ImportError):
+        bm._load_generator(bm.RunConfig("org/model", SHA, 0, quantization="nf4"), Tokenizer(), {}, None)
+    assert "load" not in events
+
+
+@pytest.mark.parametrize("determinism", ("strict", "warn"))
+def test_determinism_warnings_and_peak_memory_survive_generation_errors(torch_runtime, determinism):
+    events, torch = torch_runtime
+    config = bm.RunConfig("org/model", SHA, 0, determinism=determinism)
+    generate, metadata = bm._load_generator(config, Tokenizer(), {
+        "context_limit": 4096, "chat_template_configuration": {"tokenize": True, "truncation": False}}, None)
+    assert events["deterministic_options"] == ({"warn_only": True} if determinism == "warn" else {})
+
+    def failure(**kwargs):
+        warnings.warn("synthetic nondeterministic kernel warning", RuntimeWarning)
+        raise RuntimeError("synthetic GPU OOM")
+
+    events["instance"].generate = failure
+    torch.cuda.max_memory_allocated = lambda _: 987654
+    with pytest.raises(RuntimeError, match="synthetic GPU OOM"):
+        generate(zero_shot.build_messages("A", "hasArea"))
+    assert metadata["gpu_memory"]["peak_allocated_bytes"] == 987654
+    assert metadata["runtime_warnings"] == [{"category": "RuntimeWarning", "message": "synthetic nondeterministic kernel warning"}]
+    assert "do not guarantee" in metadata["determinism_caveat"]
+
+
+@pytest.mark.parametrize("field,value", [("thinking", "auto"), ("quantization", "int8"), ("determinism", "off")])
+def test_invalid_loading_configuration(field, value):
+    with pytest.raises(bm.Error):
+        replace(bm.RunConfig("org/model", SHA, 0), **{field: value})
+
+
+def test_new_cli_options_forwarded_without_inference(data, cpu_runtime, tmp_path, monkeypatch, capsys):
+    _, dataset = data
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen["config"] = args[4]
+        return {"status": "dry_run"}
+
+    monkeypatch.setattr(bm, "run", fake_run)
+    assert bm.main(["run", "--model", "org/model", "--revision", SHA, "--shots", "3", "--dataset", str(dataset),
+                    "--run-id", "nf4", "--dtype", "bfloat16", "--quantization", "nf4", "--thinking", "disabled",
+                    "--determinism", "warn", "--dry-run"]) == 0
+    assert seen["config"].quantization == "nf4" and seen["config"].thinking == "disabled"
+    assert seen["config"].determinism == "warn" and seen["config"].max_new_tokens == 512
+
+
+@pytest.mark.parametrize("matching", (True, False))
+def test_generation_checks_actual_token_ids_against_preflight(torch_runtime, matching):
+    events, _ = torch_runtime
+    messages = zero_shot.build_messages("A", "hasArea")
+    token_hash = hashlib.sha256(json.dumps(list(range(20))).encode("utf-8")).hexdigest()
+    preflight = {"context_limit": 4096,
+                 "chat_template_configuration": {"tokenize": True, "add_generation_prompt": True, "truncation": False},
+                 "prompt_token_hashes": {bm._chat_hash(messages): token_hash if matching else "0" * 64}}
+    generate, _ = bm._load_generator(bm.RunConfig("org/model", SHA, 0), Tokenizer(), preflight, None)
+    if matching:
+        assert generate(messages) == '["result"]'
+    else:
+        with pytest.raises(bm.Error, match="token IDs changed"):
+            generate(messages)
+        assert "generate" not in events
+
+
+def test_modern_dependency_group_is_explicit_and_leaves_baseline_pins():
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    groups = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+    assert "transformers==4.57.1" in groups["inference"]
+    assert "transformers==4.57.1" in groups["fine-tuning"]
+    assert "huggingface-hub>=0.34,<1" in groups["inference"]
+    assert "transformers==5.5.0" in groups["benchmark-modern"]
+    assert "torch==2.8.0" in groups["benchmark-modern"]
+    assert "accelerate==1.10.1" in groups["benchmark-modern"]
+    assert "bitsandbytes==0.48.1" in groups["benchmark-modern"]
+
+
+def test_missing_dependency_message_does_not_recommend_downgrading(data, cpu_runtime, tmp_path, monkeypatch):
+    directory, dataset = data
+    monkeypatch.setattr(bm, "_tokenizer_preflight", lambda *a: (_ for _ in ()).throw(ImportError("missing dependency")))
+    with pytest.raises(bm.Error, match="isolated benchmark-modern"):
+        bm.run(dataset, directory, tmp_path / "runs", "missing", bm.RunConfig("Qwen/Qwen3.5-9B", SHA, 0))
+    assert not (tmp_path / "runs").exists()
+
+
+def test_public_mistral_identifier_and_loading_configuration_are_exact():
+    model_id = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    assert bm.TARGETS[model_id] == ("mistral3", "Mistral3For" "ConditionalGeneration", 24_000_000_000)
+    assert bm.CONDITIONAL_CLASSES["mistral3"] == "Mistral3For" "ConditionalGeneration"

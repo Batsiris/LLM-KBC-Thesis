@@ -2,11 +2,14 @@
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import platform
 import re
+import sys
 import time
+import warnings
 from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -19,6 +22,15 @@ from .prediction_io import load_predictions, validate_prediction
 
 
 Error = zero_shot.InferenceError
+# Reviewed checkpoint architectures. Load the complete checkpoint, including its
+# unused vision tower, rather than silently extracting/reinitializing a text model.
+TARGETS = {
+    "Qwen/Qwen3.5-9B": ("qwen3_5", "Qwen3_5ForConditionalGeneration", 9_000_000_000),
+    # Adjacent literals preserve the public class name without a key-shaped source token.
+    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": ("mistral3", "Mistral3For" "ConditionalGeneration", 24_000_000_000),
+    "google/gemma-4-31B-it": ("gemma4", "Gemma4ForConditionalGeneration", 30_000_000_000),
+}
+CONDITIONAL_CLASSES = {model_type: name for model_type, name, _ in TARGETS.values()}
 
 
 @dataclass(frozen=True)
@@ -32,6 +44,9 @@ class RunConfig:
     max_new_tokens: int = 512
     dtype: str = "float16"
     context_limit: int | None = None
+    quantization: str = "none"
+    thinking: str = "default"
+    determinism: str = "strict"
 
     def __post_init__(self):
         if not isinstance(self.model, str) or not self.model.strip():
@@ -47,6 +62,12 @@ class RunConfig:
             raise Error("dtype must be float16 or bfloat16")
         if self.context_limit is not None and (type(self.context_limit) is not int or self.context_limit < 1):
             raise Error("Context limit must be a positive integer")
+        if self.quantization not in ("none", "nf4"):
+            raise Error("Quantization must be none or nf4")
+        if self.thinking not in ("default", "enabled", "disabled"):
+            raise Error("Thinking must be default, enabled or disabled")
+        if self.determinism not in ("strict", "warn"):
+            raise Error("Determinism must be strict or warn; no automatic fallback is allowed")
 
 
 def output_path(root: Path, config: RunConfig, run_id: str) -> Path:
@@ -128,7 +149,9 @@ def prepare(dataset: Path, data_dir: Path, config: RunConfig) -> dict:
 
 def _versions() -> dict:
     result = {"python": platform.python_version()}
-    for name in ("torch", "transformers", "huggingface-hub", "tokenizers", "safetensors", "numpy", "jinja2"):
+    for name in ("torch", "transformers", "huggingface-hub", "tokenizers", "safetensors", "numpy", "jinja2",
+                 "accelerate", "bitsandbytes", "mistral-common", "torchvision", "Pillow",
+                 "flash-linear-attention", "causal-conv1d", "triton"):
         try:
             result[name] = version(name)
         except PackageNotFoundError:
@@ -136,20 +159,60 @@ def _versions() -> dict:
     return result
 
 
+def _loading_class(transformers, model_type: str):
+    name = CONDITIONAL_CLASSES.get(model_type, "AutoModelForCausalLM")
+    loader = getattr(transformers, name, None)
+    if loader is None:
+        raise Error(f"Installed Transformers lacks {name}; use the documented isolated benchmark-modern environment")
+    return loader, name
+
+
+def _chat_hash(messages) -> str:
+    return hashlib.sha256(json.dumps(messages, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+
+
 def _tokenizer_preflight(config: RunConfig, prompts: list, cache_dir: Path | None):
     """Native templates only. Reject unsupported roles/context rather than rewriting prompts."""
+    import transformers
     from transformers import AutoConfig, AutoTokenizer
 
     kwargs = {"revision": config.revision, "trust_remote_code": False, "cache_dir": cache_dir}
+    if config.model in TARGETS:
+        _loading_class(transformers, TARGETS[config.model][0])  # Before an unknown AutoConfig or weights download.
     model_config = AutoConfig.from_pretrained(config.model, **kwargs)
     resolved = getattr(model_config, "_commit_hash", None)
     if resolved != config.revision:
         raise Error("Could not verify the requested model commit from the loaded configuration")
     if getattr(model_config, "is_encoder_decoder", False):
         raise Error("Benchmark requires a causal language model")
-    tokenizer = AutoTokenizer.from_pretrained(config.model, **kwargs)
-    template = tokenizer.get_chat_template()  # Missing/ambiguous templates fail explicitly.
+    model_type = getattr(model_config, "model_type", "")
+    if config.model in TARGETS and model_type != TARGETS[config.model][0]:
+        raise Error("Checkpoint architecture disagrees with the reviewed model ID")
+    _, loading_class = _loading_class(transformers, model_type)
     text_config = model_config.get_text_config() if hasattr(model_config, "get_text_config") else model_config
+    chat_kwargs = {"add_generation_prompt": True}
+    tokenizer_file = None
+    if model_type == "mistral3":
+        if config.thinking != "default":
+            raise Error("Mistral Small 3.2 has no enable_thinking switch; use --thinking default")
+        from huggingface_hub import hf_hub_download
+
+        tokenizer_file = Path(hf_hub_download(config.model, "tekken.json", revision=config.revision, cache_dir=cache_dir))
+        native = getattr(transformers, "MistralCommonBackend", None) or getattr(transformers, "MistralCommonTokenizer", None)
+        if native is None:
+            raise Error("Install the documented mistral-common tokenizer dependencies")
+        tokenizer = native.from_pretrained(str(tokenizer_file.parent), local_files_only=True)
+        # 4.57.1 rejects this argument; 5.5 accepts it as a documented no-op.
+        if "add_generation_prompt" not in inspect.signature(tokenizer.apply_chat_template).parameters:
+            chat_kwargs = {}
+        template = None  # Native mistral-common encoding is not a Jinja template.
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(config.model, **kwargs)
+        template = tokenizer.get_chat_template()
+        if config.thinking != "default":
+            if model_type not in ("qwen3_5", "gemma4") or "enable_thinking" not in template:
+                raise Error("This checkpoint has no reviewed enable_thinking template switch")
+            chat_kwargs["enable_thinking"] = config.thinking == "enabled"
     limits = [getattr(text_config, key, None) for key in ("max_position_embeddings", "n_positions", "max_sequence_length", "seq_length")]
     limits.append(getattr(tokenizer, "model_max_length", None))
     limits = [value for value in limits if type(value) is int and 0 < value < 10**9]
@@ -164,12 +227,12 @@ def _tokenizer_preflight(config: RunConfig, prompts: list, cache_dir: Path | Non
     for row in prompts:
         try:
             rendered = tokenizer.apply_chat_template(
-                row["messages"], tokenize=False, add_generation_prompt=True,
+                row["messages"], tokenize=False, **chat_kwargs,
             )
             if not isinstance(rendered, str) or any(message["content"] not in rendered for message in row["messages"]):
                 raise Error("Template omitted or changed message content (including the system instruction)")
             tokens = tokenizer.apply_chat_template(
-                row["messages"], tokenize=True, add_generation_prompt=True, truncation=False,
+                row["messages"], tokenize=True, truncation=False, return_dict=False, **chat_kwargs,
             )
         except Exception as error:
             raise Error(f"Native chat template cannot represent the unchanged messages: {error}") from error
@@ -178,42 +241,98 @@ def _tokenizer_preflight(config: RunConfig, prompts: list, cache_dir: Path | Non
         if len(tokens) + config.max_new_tokens > limit:
             raise Error(f"Context overflow for {row['SubjectEntity']!r}, {row['Relation']}")
         row["input_tokens"] = len(tokens)
+        # Retain the actual serialization (including native thinking headers).
+        row["rendered_chat"] = rendered
+        row["input_ids_sha256"] = hashlib.sha256(json.dumps(tokens).encode("utf-8")).hexdigest()
         counts.append(len(tokens))
     return tokenizer, {
         "resolved_revision": resolved, "context_limit": limit,
-        "chat_template": template, "chat_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
-        "chat_template_configuration": {"tokenize": True, "add_generation_prompt": True, "truncation": False},
-        "special_tokens_map": tokenizer.special_tokens_map,
+        "model_type": model_type, "architectures": getattr(model_config, "architectures", None),
+        "loading_class": loading_class, "text_only_inputs": True, "vision_weights_loaded": model_type in CONDITIONAL_CLASSES,
+        "chat_template": template,
+        "chat_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest() if template is not None else None,
+        "chat_backend": "mistral-common" if tokenizer_file else "native-jinja",
+        "tokenizer_file_sha256": _sha256(tokenizer_file) if tokenizer_file else None,
+        "chat_template_configuration": {"tokenize": True, "truncation": False, **chat_kwargs},
+        "special_tokens_map": getattr(tokenizer, "special_tokens_map", None),
+        "special_token_ids": {name: getattr(tokenizer, name, None) for name in ("bos_token_id", "eos_token_id", "pad_token_id")},
         "tokenizer_class": type(tokenizer).__name__, "tokenizer_model_max_length": tokenizer.model_max_length,
+        "prompt_token_hashes": {_chat_hash(row["messages"]): row["input_ids_sha256"] for row in prompts},
         "preflight_records": len(counts), "input_tokens_min": min(counts), "input_tokens_max": max(counts),
     }
 
 
 def _load_generator(config: RunConfig, tokenizer, preflight: dict, cache_dir: Path | None):
-    """Single-device, unquantized greedy inference; model-native EOS, no remote code."""
+    """Explicit single-GPU precision/quantization; model-native EOS, no remote code."""
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     import torch
-    from transformers import AutoModelForCausalLM, GenerationConfig
+    import transformers
+    from transformers import GenerationConfig
 
     if not torch.cuda.is_available():
         raise Error("A CUDA GPU is required for benchmark inference")
     if config.dtype == "bfloat16" and not torch.cuda.is_bf16_supported():
         raise Error("bfloat16 is unsupported on this GPU; dtype will not be changed automatically")
     torch.manual_seed(config.seed)
-    torch.use_deterministic_algorithms(True)
+    if config.determinism == "strict":
+        torch.use_deterministic_algorithms(True)
+    else:
+        torch.use_deterministic_algorithms(True, warn_only=True)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
+    loader, loading_class = _loading_class(transformers, preflight.get("model_type", ""))
+    properties = torch.cuda.get_device_properties(0)
+    free_bytes, _ = torch.cuda.mem_get_info(0)
+    if config.model in TARGETS and config.quantization == "none":
+        weight_floor = TARGETS[config.model][2] * 2  # Both allowed dtypes occupy two bytes.
+        if weight_floor >= free_bytes:
+            raise Error("Nominal 16-bit weights alone exceed free GPU memory; explicitly select --quantization nf4")
+    load_kwargs = {
+        "revision": config.revision, "cache_dir": cache_dir, "trust_remote_code": False,
+        "torch_dtype": getattr(torch, config.dtype), "attn_implementation": "eager", "use_safetensors": True,
+    }
+    quantization = None
+    if config.quantization == "nf4":
+        # Require these packages; never install, offload, shard or change dtype automatically.
+        import accelerate  # noqa: F401
+        import bitsandbytes  # noqa: F401
+        from transformers import BitsAndBytesConfig
+
+        quantized = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=getattr(torch, config.dtype),
+        )
+        quantization = quantized.to_dict()
+        load_kwargs.update(quantization_config=quantized, device_map={"": 0})
+    runtime_warnings, memory = [], {}
+
+    def update_memory():
+        memory.update(peak_allocated_bytes=torch.cuda.max_memory_allocated(0),
+                      peak_reserved_bytes=torch.cuda.max_memory_reserved(0))
+
+    def save_warnings(records):
+        for record in records:
+            entry = {"category": record.category.__name__, "message": str(record.message)}
+            if entry not in runtime_warnings:
+                runtime_warnings.append(entry)
+
+    torch.cuda.reset_peak_memory_stats(0)
     started = time.perf_counter()
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model, revision=config.revision, cache_dir=cache_dir, trust_remote_code=False,
-        torch_dtype=getattr(torch, config.dtype), attn_implementation="eager", use_safetensors=True,
-    ).to("cuda")
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        try:
+            model = loader.from_pretrained(config.model, **load_kwargs)
+            if config.quantization == "none":
+                model = model.to("cuda")
+        finally:
+            update_memory()
+            save_warnings(captured)
     model.eval()
     eos = model.generation_config.eos_token_id
     pad = tokenizer.pad_token_id
-    if pad is None:
+    if pad is None or pad < 0:
         pad = tokenizer.eos_token_id
     if pad is None:
         pad = eos[0] if isinstance(eos, list) and eos else eos
@@ -233,18 +352,36 @@ def _load_generator(config: RunConfig, tokenizer, preflight: dict, cache_dir: Pa
         length = batch["input_ids"].shape[1]
         if length + config.max_new_tokens > preflight["context_limit"]:
             raise Error("Prompt no longer fits the preflight context window")
-        with torch.inference_mode():
-            output = model.generate(**batch, generation_config=generation)
-        torch.cuda.synchronize()
-        return tokenizer.decode(output[0, length:], skip_special_tokens=True)
+        if preflight.get("prompt_token_hashes"):
+            actual = hashlib.sha256(json.dumps(batch["input_ids"][0].tolist()).encode("utf-8")).hexdigest()
+            if actual != preflight["prompt_token_hashes"].get(_chat_hash(messages)):
+                raise Error("Templated token IDs changed after preflight; no generation performed")
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            try:
+                with torch.inference_mode():
+                    output = model.generate(**batch, generation_config=generation)
+                torch.cuda.synchronize()
+                return tokenizer.decode(output[0, length:], skip_special_tokens=True)
+            finally:
+                update_memory()
+                save_warnings(captured)
 
     return generate, {
         "model_id": config.model, "requested_revision": config.revision, **preflight,
         "generation": generation.to_dict(), "dtype": config.dtype, "seed": config.seed,
         "attention_implementation": "eager", "batch_size": 1, "deterministic_algorithms": True,
+        "loading_class": loading_class, "quantization": quantization,
+        "model_implementation_module": type(model).__module__,
+        "hybrid_fast_path_available": getattr(sys.modules.get(type(model).__module__), "is_fast_path_available", None),
+        "thinking": config.thinking, "determinism": config.determinism,
+        "determinism_caveat": "Greedy decoding and PyTorch checks do not guarantee determinism of third-party quantization/hybrid kernels or across hardware/versions",
+        "runtime_warnings": runtime_warnings, "gpu_memory": memory,
         "cudnn_benchmark": False, "cudnn_deterministic": True,
         "tf32": False, "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
         "gpu": torch.cuda.get_device_name(0), "cuda": torch.version.cuda,
+        "gpu_total_memory_bytes": properties.total_memory, "gpu_free_before_load_bytes": free_bytes,
+        "gpu_compute_capability": list(torch.cuda.get_device_capability(0)),
         "cudnn": torch.backends.cudnn.version(), "versions": _versions(), "model_load_seconds": load_seconds,
     }
 
@@ -269,6 +406,12 @@ def run(dataset: Path, data_dir: Path, root: Path, run_id: str, config: RunConfi
         tokenizer, preflight = _tokenizer_preflight(config, prepared["prompts"], cache_dir)
         generate, runtime = _load_generator(config, tokenizer, preflight, cache_dir)
     except ImportError as error:
+        if config.model in TARGETS or config.quantization == "nf4":
+            raise Error(
+                "Missing model/quantization dependency; use the documented isolated benchmark-modern "
+                "environment or reviewed legacy Mistral stack. No packages are installed automatically. "
+                f"Import failure: {error}"
+            ) from error
         raise Error('Install the existing inference extra: python -m pip install -e ".[inference]"') from error
     if _sha256(Path(dataset)) != prepared["dataset"]["sha256"] or (
         config.shots and _sha256(Path(data_dir) / "train.jsonl") != prepared["train_sha256"]
@@ -356,6 +499,8 @@ def report(data_dir: Path, split: str, predictions: Path) -> dict:
         "prompt_version": metadata["prompt_version"], **expected,
         "inference_runtime_seconds": metadata["inference_runtime_seconds"],
         "model_load_seconds": metadata["model_load_seconds"],
+        "loading_class": metadata.get("loading_class"), "quantization": metadata.get("quantization"),
+        "dtype": metadata.get("dtype"), "gpu_memory": metadata.get("gpu_memory"),
     }
 
 
@@ -375,6 +520,9 @@ def main(argv=None) -> int:
     runner.add_argument("--max-examples", type=int)
     runner.add_argument("--dtype", choices=("float16", "bfloat16"), default="float16")
     runner.add_argument("--context-limit", type=int)
+    runner.add_argument("--quantization", choices=("none", "nf4"), default="none")
+    runner.add_argument("--thinking", choices=("default", "enabled", "disabled"), default="default")
+    runner.add_argument("--determinism", choices=("strict", "warn"), default="strict")
     runner.add_argument("--cache-dir", type=Path)
     runner.add_argument("--dry-run", action="store_true")
     reporter = commands.add_parser("report", help="Separate offline official scoring of a complete run")
@@ -385,7 +533,7 @@ def main(argv=None) -> int:
     try:
         if args.command == "run":
             config = RunConfig(args.model, args.revision, args.shots, args.seed, args.max_new_tokens,
-                               args.dtype, args.context_limit)
+                               args.dtype, args.context_limit, args.quantization, args.thinking, args.determinism)
             result = run(args.dataset, args.data_dir, args.output_root, args.run_id, config,
                          dry_run=args.dry_run, max_examples=args.max_examples, cache_dir=args.cache_dir)
         else:

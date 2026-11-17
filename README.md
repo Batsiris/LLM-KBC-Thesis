@@ -96,6 +96,10 @@ Help and offline dry-run require no GPU dependencies or network access.
 See [multi-model benchmark commands and protocol](docs/model_benchmark.md) for
 all four conditions, isolated run paths, reproducibility metadata, offline
 reporting, compatibility limits and model-selection/held-out safeguards.
+The benchmark also provides explicit conditional-generation loaders for Qwen3.5,
+Mistral Small 3.2 and Gemma4, optional NF4/BF16 configurations, and peak-memory
+metadata. Their [pinned environments and GPU smoke commands](docs/model_benchmark.md#reviewed-conditional-generation-models-and-a100-40-gb-configurations)
+are documented separately; existing inference/training dependency pins are preserved.
 No candidate models are selected automatically and no new inference is run.
 
 ## Zero-shot inference in Google Colab

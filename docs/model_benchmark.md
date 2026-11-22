@@ -307,7 +307,8 @@ exercising its CUDA kernels remain HPC checks. Do not combine these extras with
 For a new environment only (do not recreate an existing completed-run environment):
 
 ```bash
-BENCH_ENV="$HOME/.venvs/llm-kbc-benchmark-modern"
+: "${BENCH_SCRATCH_ROOT:?Set an existing scratch root outside HOME first}"
+BENCH_ENV="$BENCH_SCRATCH_ROOT/envs/llm-kbc-benchmark-modern"
 test ! -e "$BENCH_ENV" || exit 1
 python3.11 -m venv "$BENCH_ENV"
 "$BENCH_ENV/bin/python" -m pip install torch==2.8.0 torchvision==0.23.0 \
@@ -333,12 +334,16 @@ three full conditions into one six-hour allocation. Sources:
 [six-hour ampere limit](https://hpc.it.auth.gr/nodes-summary/).
 
 ```bash
-export BENCH_PYTHON="$HOME/.venvs/llm-kbc-benchmark-modern/bin/python"
-# Optional: configure scratch/cache paths explicitly; no username is hardcoded.
-# export BENCH_CACHE_DIR=/your/existing/huggingface-cache
-# export BENCH_OUTPUT_ROOT=/your/new/benchmark-results
-mkdir -p results/slurm
+# Aristotle example; change the root for your allocation or another HPC system.
+export BENCH_SCRATCH_ROOT=/scratch/m/mbatsir/llm-kbc
+# Point to your EXISTING modern environment; do not move or recreate it.
+export BENCH_PYTHON="$BENCH_SCRATCH_ROOT/envs/llm-kbc-benchmark-modern/bin/python"
+export HF_HOME="${HF_HOME:-$BENCH_SCRATCH_ROOT/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export BENCH_OUTPUT_ROOT="${BENCH_OUTPUT_ROOT:-$BENCH_SCRATCH_ROOT/results/model_benchmark}"
+export BENCH_LOG_DIR="${BENCH_LOG_DIR:-$BENCH_SCRATCH_ROOT/logs/slurm}"
 bash -n scripts/slurm/benchmark.sbatch
+bash -n scripts/slurm/submit_benchmark.sh
 "$BENCH_PYTHON" -m pip check
 
 # CPU-only preparation: no tokenizer/network/weights/output creation.
@@ -347,22 +352,23 @@ bash -n scripts/slurm/benchmark.sbatch
   --revision 29439f81c2be264d8d393273f99e7db9c0961120 --shots 3 \
   --dtype bfloat16 --quantization fp8-dequantize --thinking default \
   --seed 0 --max-new-tokens 512 --context-limit 4096 --determinism strict \
-  --dataset data/lm_kbc_2026/val.jsonl --expected-records 475 --run-id preflight-v1 --dry-run
+  --dataset data/lm_kbc_2026/val.jsonl --expected-records 475 --run-id preflight-v1 \
+  --output-root "$BENCH_OUTPUT_ROOT" --dry-run
 
 # Three five-record GPU smokes each, in distinct model/condition/run directories.
-sbatch scripts/slurm/benchmark.sbatch ministral smoke v1
-sbatch scripts/slurm/benchmark.sbatch granite smoke v1
+bash scripts/slurm/submit_benchmark.sh ministral smoke v1
+bash scripts/slurm/submit_benchmark.sh granite smoke v1
 
 # ONLY after all smoke artifacts and the checklist below have been reviewed:
-sbatch scripts/slurm/benchmark.sbatch ministral full v1
-sbatch scripts/slurm/benchmark.sbatch granite full v1
+bash scripts/slurm/submit_benchmark.sh ministral full v1
+bash scripts/slurm/submit_benchmark.sh granite full v1
 ```
 
 The script pins both new revisions and verifies exact train/validation file
 hashes, then requires all **475** validation identities before selecting any
 smoke prefix. It records environment packages and GPU inventory in append-only
-Slurm output. Add site-required account flags to `sbatch` if needed; no account
-is guessed. Cached snapshots are reusable, but run directories are never reused;
+Slurm output. For site-required settings use Slurm submission variables such as
+`SBATCH_ACCOUNT`; no account is guessed. Cached snapshots are reusable, but run directories are never reused;
 choose a fresh reviewed tag for repeats. Output IDs include model/revision,
 shots, precision, smoke/full and tag. No automatic scoring/resume is performed.
 The pre-timeout INT requests diagnostic finalization; a hard kill may leave
@@ -379,6 +385,7 @@ for SHOTS in 0 3 5; do
     --shots "$SHOTS" --dtype bfloat16 --quantization nf4 --thinking disabled \
     --determinism strict --seed 0 --max-new-tokens 512 --context-limit 4096 \
     --dataset data/lm_kbc_2026/val.jsonl --expected-records 475 \
+    --output-root "$BENCH_OUTPUT_ROOT" --cache-dir "$HF_HUB_CACHE" \
     --run-id nf4-smoke-v1 --max-examples 5
 done
 ```
@@ -388,6 +395,150 @@ run each condition within its own reviewed allocation. The completed Qwen3.5
 and archived Qwen2.5 experiments are references, not requests to rerun them.
 Their old entry points, prompt versions, manifests, outputs and metrics remain
 untouched. Do not overwrite historical artifacts to make configurations match.
+
+### Aristotle storage and exit-128 diagnostics
+
+The researcher's home quota is 20GB and currently exhausted. Keep the existing
+repository/datasets where they are, but use scratch for **new** caches,
+environments, temporary files, logs and outputs. No script moves/deletes existing
+results, checkpoints, environments, datasets or caches. A scratch root is now
+required; there is no fallback to repository-relative results or home caches in
+the Slurm runner. All override paths must be absolute and resolve outside HOME,
+including symlink targets. An unset scratch root or conflicting cache overrides
+fail explicitly. Use the actual existing environment path in `BENCH_PYTHON`;
+its invocation path is retained so resolving a venv's interpreter symlink cannot
+accidentally select the system Python.
+
+| Purpose | Setting / default below `BENCH_SCRATCH_ROOT` |
+|---|---|
+| Existing Python environment | Required `BENCH_PYTHON`, outside home; never auto-installed |
+| Slurm stdout/stderr | `BENCH_LOG_DIR`, default `logs/slurm`; distinct `%x-%A_%a.out` / `.err`, append mode |
+| HF configuration and caches | `HF_HOME`, default `huggingface`; `HF_HUB_CACHE` and explicit `BENCH_CACHE_DIR` must resolve to the same model cache, default `$HF_HOME/hub` |
+| HF secondary caches | `HF_XET_CACHE`, `HF_ASSETS_CACHE`, `HF_MODULES_CACHE`, default below `HF_HOME` |
+| Predictions and all four sidecars | `BENCH_OUTPUT_ROOT`, default `results/model_benchmark`; existing model/shot/run directory structure and run IDs unchanged |
+| General / torch / Triton / CUDA / pip caches | `XDG_CACHE_HOME`, default `cache`; `TORCH_HOME`, `TRITON_CACHE_DIR`, `CUDA_CACHE_PATH`, `PIP_CACHE_DIR` default below it |
+| Temporary files | `TMPDIR`, default `tmp`; `TMP` and `TEMP` default to it |
+| Python bytecode cache | `PYTHONPYCACHEPREFIX`, default `$XDG_CACHE_HOME/pycache` |
+
+Inherited overrides are validated, not silently replaced. Legacy
+`TRANSFORMERS_CACHE`, `PYTORCH_TRANSFORMERS_CACHE` and
+`PYTORCH_PRETRAINED_BERT_CACHE` must be unset or resolve to `HF_HUB_CACHE`.
+The runner creates only configured directories and empty write probes (removed
+immediately), logs the resolved paths and filesystem byte/inode availability,
+and disables optional Git index-refresh writes (`GIT_OPTIONAL_LOCKS=0`). `df`
+does **not** measure per-user quota; check site quota tools separately. These
+checks cannot guarantee capacity for a later large download or prevent another
+process changing a path. Unrelated third-party tools must be reviewed separately.
+
+**Submit through `submit_benchmark.sh`.** It creates/probes the scratch log
+directory before calling `sbatch --output=... --error=... --export=ALL`.
+`#SBATCH` is parsed before shell execution, so `$BENCH_LOG_DIR` in a directive
+would be literal text. Setting it inside a running job cannot relocate already
+opened logs. Direct `sbatch benchmark.sbatch` without explicit log options is
+unsafe here: Slurm defaults logs to the submission directory, possibly home.
+The wrapper overrides inherited Slurm log options with the chosen scratch paths.
+Sources: [Slurm submission/filename semantics](https://slurm.schedmd.com/sbatch.html),
+[HF environment-variable defaults](https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables).
+
+The wrapper accepts `BENCH_SHOTS=0`, `3` or `5` for a single shot condition.
+Unset `BENCH_SHOTS`, or set it to `all`, for the default `0,3,5%1` array
+(one concurrent task). An explicitly empty value and all other values are
+rejected before submission. The wrapper always supplies an explicit `--array`
+argument; `BENCH_SHOTS` therefore overrides both the batch-script default and
+any inherited `SBATCH_ARRAY_INX`. Use this selector instead of the Slurm variable.
+Models, modes and run-ID formulas are unchanged.
+
+For only the failed 5-shot smoke, preserving the original run ID, use the
+command below **only if that exact output run directory was never created**:
+
+```bash
+BENCH_SHOTS=5 bash scripts/slurm/submit_benchmark.sh ministral smoke v1
+```
+
+This passes exactly `sbatch --array=5` (alongside the existing log/export options),
+so it cannot submit 0-/3-shot tasks. The same selector works for smoke/full and
+either model. For a complete array explicitly use `BENCH_SHOTS=all`:
+
+```bash
+BENCH_SHOTS=all bash scripts/slurm/submit_benchmark.sh granite smoke v1
+```
+
+If any artifact directory exists, the benchmark still refuses reuse; select a
+fresh explicit tag and retain the interrupted artifacts. The wrapper does not
+resume, retry or rename runs. Do not rerun completed 0-/3-shot jobs inadvertently.
+
+Observed exit 128 is consistent with a fatal Git error immediately after the
+checksums, before shot-specific inference; it is **not evidence of a 5-shot GPU
+OOM**. Git could fail on repository discovery, ownership/permissions, inherited
+Git configuration/environment, transient home mounts, or writing its output.
+Home-quota exhaustion is a concrete storage problem and may suppress/truncate
+the original stdout/stderr, but `git rev-parse HEAD` normally needs no repository
+writes. A separate successful job on the same node does not prove identical
+working directories, environments or filesystem state. Without the missing fatal
+message the precise cause remains unconfirmed.
+
+New logs record job/task/host/working directory, Git executable/version/top-level
+and Git directory, traced preflight/run commands, and an ERR line with script,
+line number, command and original exit code. An EXIT summary also covers explicit
+validation exits. `srun` is no longer `exec`-replaced, so its nonzero exit status
+is logged by the shell. Git failures remain fatal; there is no fabricated commit,
+safe-directory bypass, swallowed error or inference-setting change. Check both
+the `.out` and `.err` scratch files. SIGKILL/node loss or failure opening the
+Slurm logs can still prevent diagnostics; no in-job trap can fix those cases.
+
+### Durable experiment export (manual, no cleanup)
+
+Treat scratch as temporary storage; no retention/backup policy is assumed.
+After verifying completion, copy each entire run directory (predictions,
+manifest, metadata, raw generations and failure log), its Slurm stdout/stderr,
+package listing, source commit/patch and any associated evaluation report to an
+approved durable destination **outside scratch and the full home quota** (e.g.
+institutional project storage or an external archive). Preserve original bytes
+and paths in metadata; do not edit provenance fields to make an archive portable.
+Record SHA256s, verify them at the destination, and refuse existing destinations.
+Absolute path references may require explicit tool/path handling when later
+re-evaluating an archived copy.
+
+One safe Python procedure for a finished run directory, executed manually after
+setting both paths, is below. It creates a fresh archive directory, rejects
+symlinks, uses exclusive file creation, and verifies every copied file:
+
+```python
+import hashlib
+import json
+import shutil
+from pathlib import Path
+
+source = Path('/scratch/path/to/completed/run').resolve()
+destination = Path('/durable/project/archive/unique-run-name')
+assert source.is_dir() and not destination.exists()
+paths = sorted(source.rglob('*'))
+if any(path.is_symlink() for path in paths):
+    raise ValueError('Refusing symlinks in experiment archive')
+files = [path for path in paths if path.is_file()]
+def sha256(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+before = {str(path.relative_to(source)): sha256(path) for path in files}
+destination.mkdir(parents=True, exist_ok=False)
+for relative, expected in before.items():
+    original, copied = source / relative, destination / relative
+    copied.parent.mkdir(parents=True, exist_ok=True)
+    with original.open('rb') as reader, copied.open('xb') as writer:
+        shutil.copyfileobj(reader, writer)
+    if sha256(copied) != expected or sha256(original) != expected:
+        raise ValueError(f'Archive verification failed: {relative}')
+with (destination / 'ARCHIVE_SHA256.json').open('x', encoding='utf-8') as stream:
+    json.dump(before, stream, ensure_ascii=False, sort_keys=True, indent=2)
+```
+
+Archive logs/reports similarly to separate fresh destinations. On interruption
+the new archive can be partial; the hash inventory is written only after all
+copies verify. This is not a multi-file transaction, continuous backup or proof
+of remote durability. Verify the inventory after transfer and keep an independent
+copy before any future, separately authorized scratch cleanup. Nothing is
+automatically exported, deleted or moved by this change.
 
 ### Fairness and verification checklist
 

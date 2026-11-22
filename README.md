@@ -96,10 +96,14 @@ Help and offline dry-run require no GPU dependencies or network access.
 See [multi-model benchmark commands and protocol](docs/model_benchmark.md) for
 all four conditions, isolated run paths, reproducibility metadata, offline
 reporting, compatibility limits and model-selection/held-out safeguards.
-The benchmark also provides explicit conditional-generation loaders for Qwen3.5,
-Mistral Small 3.2 and Gemma4, optional NF4/BF16 configurations, and peak-memory
-metadata. Their [pinned environments and GPU smoke commands](docs/model_benchmark.md#reviewed-conditional-generation-models-and-a100-40-gb-configurations)
-are documented separately; existing inference/training dependency pins are preserved.
+The revised five-model roster retains archived Qwen2.5 and completed Qwen3.5
+conditions, replaces Mistral Small 3.2 with **Ministral 3 14B**, retains Gemma4,
+and adds **Granite 4.1 8B**. Qwen completion status is researcher-reported; this
+change does not rerun or alter those artifacts. Ministral requires explicit
+FP8-checkpoint-to-BF16 conversion on A100; Granite uses native BF16 causal-LM
+inference. Their [verified revisions, configurations and Slurm commands](docs/model_benchmark.md#reviewed-five-model-roster)
+are documented separately, including a 475-record input guard and GPU verification
+checklist. Existing inference/training and isolated modern dependency pins are preserved.
 No candidate models are selected automatically and no new inference is run.
 
 ## Zero-shot inference in Google Colab

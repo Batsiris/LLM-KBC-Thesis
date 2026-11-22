@@ -469,7 +469,7 @@ def install_quantization_standins(monkeypatch):
     monkeypatch.setattr(sys.modules["transformers"], "BitsAndBytesConfig", BitsConfig, raising=False)
 
 
-@pytest.mark.parametrize("model", bm.TARGETS)
+@pytest.mark.parametrize("model", [model for model in bm.TARGETS if model != bm.MINISTRAL])
 @pytest.mark.parametrize("quantization", ("none", "nf4"))
 def test_target_architecture_loading_and_quantization(torch_runtime, monkeypatch, model, quantization):
     events, torch = torch_runtime
@@ -502,7 +502,7 @@ def test_target_architecture_loading_and_quantization(torch_runtime, monkeypatch
         assert metadata["quantization"] is None and events["to"] == "cuda"
 
 
-@pytest.mark.parametrize("model", list(bm.TARGETS)[1:])
+@pytest.mark.parametrize("model", ("google/gemma-4-31B-it",))
 def test_40gb_rejects_impossible_unquantized_targets_before_weights(torch_runtime, model):
     events, _ = torch_runtime
     model_type, name, _ = bm.TARGETS[model]
@@ -558,14 +558,17 @@ def test_modern_text_only_native_chat_and_thinking(data, cpu_runtime, monkeypatc
 
 
 @pytest.mark.parametrize("legacy_api", (True, False))
-def test_mistral_native_tekken_chat_without_jinja(data, cpu_runtime, monkeypatch, tmp_path, legacy_api):
+@pytest.mark.parametrize("shots", (0, 1, 3, 5))
+def test_mistral_native_tekken_chat_without_jinja(data, cpu_runtime, monkeypatch, tmp_path, legacy_api, shots):
     directory, dataset = data
-    model = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    model = bm.MINISTRAL
     fake = sys.modules["transformers"]
     setattr(fake, "Mistral3For" "ConditionalGeneration", SimpleNamespace())
+    fake.FineGrainedFP8Config = SimpleNamespace()
     fake.AutoConfig.from_pretrained = lambda *a, **kw: SimpleNamespace(
         _commit_hash=SHA, model_type="mistral3", architectures=["Mistral3For" "ConditionalGeneration"],
-        get_text_config=lambda: SimpleNamespace(max_position_embeddings=131072))
+        quantization_config=FP8_CONFIG,
+        get_text_config=lambda: SimpleNamespace(model_type="ministral3", max_position_embeddings=262144))
     tekken = tmp_path / "tekken.json"
     tekken.write_text("fixture tokenizer", encoding="utf-8")
     events = {}
@@ -602,7 +605,7 @@ def test_mistral_native_tekken_chat_without_jinja(data, cpu_runtime, monkeypatch
 
         NativeTokenizer.apply_chat_template = modern
     setattr(fake, "MistralCommonTokenizer" if legacy_api else "MistralCommonBackend", NativeTokenizer)
-    config = bm.RunConfig(model, SHA, 3)
+    config = bm.RunConfig(model, SHA, shots, dtype="bfloat16", quantization="fp8-dequantize")
     prompts = bm.prepare(dataset, directory, config)["prompts"]
     _, preflight = bm._tokenizer_preflight(config, prompts, None)
     assert events["download"] == (model, "tekken.json", {"revision": SHA, "cache_dir": None})
@@ -610,7 +613,8 @@ def test_mistral_native_tekken_chat_without_jinja(data, cpu_runtime, monkeypatch
     assert preflight["chat_template"] is preflight["chat_template_sha256"] is None
     assert preflight["tokenizer_file_sha256"] == bm._sha256(tekken)
     assert preflight["special_tokens_map"] is None
-    assert preflight["context_limit"] == 131072
+    assert preflight["context_limit"] == 262144
+    assert preflight["checkpoint_quantization"] == FP8_CONFIG
     assert ("add_generation_prompt" in preflight["chat_template_configuration"]) != legacy_api
     with pytest.raises(bm.Error, match="no enable_thinking switch"):
         bm._tokenizer_preflight(replace(config, thinking="disabled"), prompts, None)
@@ -707,6 +711,165 @@ def test_missing_dependency_message_does_not_recommend_downgrading(data, cpu_run
 
 
 def test_public_mistral_identifier_and_loading_configuration_are_exact():
-    model_id = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
-    assert bm.TARGETS[model_id] == ("mistral3", "Mistral3For" "ConditionalGeneration", 24_000_000_000)
+    model_id = "mistralai/Ministral-3-14B-Instruct-2512"
+    assert bm.TARGETS[model_id] == ("mistral3", "Mistral3For" "ConditionalGeneration", 13_945_031_680)
     assert bm.CONDITIONAL_CLASSES["mistral3"] == "Mistral3For" "ConditionalGeneration"
+
+
+# Same scaling layout as the reviewed checkpoint; never substitute FP8Config defaults.
+FP8_CONFIG = {"quant_method": "fp8", "activation_scheme": "static", "weight_block_size": None,
+              "dequantize": False, "modules_to_not_convert": ["model.vision_tower", "lm_head"]}
+
+
+def test_revised_five_model_roster():
+    assert set(bm.TARGETS) == {"Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen3.5-9B", bm.MINISTRAL,
+                               "google/gemma-4-31B-it", "ibm-granite/granite-4.1-8b"}
+    assert bm.LOADING_CLASSES["granite"] == "GraniteForCausalLM"
+    assert "granite" not in bm.CONDITIONAL_CLASSES and "qwen2" not in bm.CONDITIONAL_CLASSES
+
+
+@pytest.mark.parametrize("dtype,quantization", [("float16", "fp8-dequantize"), ("bfloat16", "none"),
+                                               ("bfloat16", "nf4")])
+def test_ministral_requires_explicit_reviewed_precision(dtype, quantization):
+    with pytest.raises(bm.Error, match="requires explicit"):
+        bm.RunConfig(bm.MINISTRAL, SHA, 0, dtype=dtype, quantization=quantization)
+
+
+def test_fp8_conversion_not_available_for_other_checkpoints():
+    with pytest.raises(bm.Error, match="reviewed only"):
+        bm.RunConfig(bm.GRANITE, SHA, 0, dtype="bfloat16", quantization="fp8-dequantize")
+
+
+def test_ministral_explicit_dequantization_keeps_source_scaling(torch_runtime, monkeypatch):
+    events, _ = torch_runtime
+    fake = sys.modules["transformers"]
+    setattr(fake, bm.TARGETS[bm.MINISTRAL][1], fake.AutoModelForCausalLM)
+
+    class FP8:
+        def __init__(self, **kwargs):
+            self.values = kwargs
+
+        def to_dict(self):
+            return self.values
+
+    monkeypatch.setattr(fake, "FineGrainedFP8Config", FP8, raising=False)
+    config = bm.RunConfig(bm.MINISTRAL, SHA, 0, dtype="bfloat16", quantization="fp8-dequantize")
+    preflight = {"model_type": "mistral3", "checkpoint_quantization": FP8_CONFIG, "context_limit": 4096,
+                 "chat_template_configuration": {"tokenize": True, "truncation": False}}
+    generate, metadata = bm._load_generator(config, Tokenizer(), preflight, None)
+    assert generate(zero_shot.build_messages("A", "hasArea")) == '["result"]'
+    assert metadata["quantization"] == {**FP8_CONFIG, "dequantize": True}
+    assert not FP8_CONFIG["dequantize"]  # No mutation of source metadata.
+    kwargs = events["load"][1]
+    assert kwargs["torch_dtype"] == "bf16" and kwargs["device_map"] == {"": 0}
+    assert kwargs["revision"] == SHA and kwargs["trust_remote_code"] is False
+    assert "to" not in events
+    assert metadata["generation"]["eos_token_id"] == [11, 12]
+
+
+@pytest.mark.parametrize("problem", ("memory", "missing_preflight"))
+def test_ministral_fails_before_loading_weights(torch_runtime, problem):
+    events, torch = torch_runtime
+    fake = sys.modules["transformers"]
+    setattr(fake, bm.TARGETS[bm.MINISTRAL][1], fake.AutoModelForCausalLM)
+    fake.FineGrainedFP8Config = SimpleNamespace()
+    config = bm.RunConfig(bm.MINISTRAL, SHA, 0, dtype="bfloat16", quantization="fp8-dequantize")
+    if problem == "memory":
+        torch.cuda.mem_get_info = lambda _: (20 * 1024**3, 40 * 1024**3)
+    with pytest.raises(bm.Error, match="weights alone|Missing reviewed"):
+        bm._load_generator(config, Tokenizer(), {"model_type": "mistral3"}, None)
+    assert "load" not in events
+
+
+@pytest.mark.parametrize("problem", ("revision", "architecture", "quantization", "text_architecture", "old_api"))
+def test_ministral_config_preflight_rejects_unreviewed_inputs(data, cpu_runtime, problem):
+    directory, dataset = data
+    fake = sys.modules["transformers"]
+    setattr(fake, bm.TARGETS[bm.MINISTRAL][1], SimpleNamespace())
+    fake.FineGrainedFP8Config = SimpleNamespace()
+    config = bm.RunConfig(bm.MINISTRAL, SHA, 0, dtype="bfloat16", quantization="fp8-dequantize")
+    loaded = SimpleNamespace(_commit_hash=SHA, model_type="mistral3", quantization_config=FP8_CONFIG,
+                             get_text_config=lambda: SimpleNamespace(model_type="ministral3"))
+    if problem == "revision":
+        loaded._commit_hash = "b" * 40
+    elif problem == "architecture":
+        loaded.model_type = "mistral"
+    elif problem == "quantization":
+        loaded.quantization_config = {**FP8_CONFIG, "weight_block_size": [128, 128]}
+    elif problem == "text_architecture":
+        loaded.get_text_config = lambda: SimpleNamespace(model_type="mistral")
+    else:
+        del fake.FineGrainedFP8Config
+    fake.AutoConfig.from_pretrained = lambda *a, **kw: loaded
+    with pytest.raises(bm.Error):
+        bm._tokenizer_preflight(config, bm.prepare(dataset, directory, config)["prompts"], None)
+    assert "tokenizer" not in cpu_runtime
+
+
+@pytest.mark.parametrize("shots", (0, 1, 3, 5))
+def test_granite_native_tokenizer_and_causal_loader(data, cpu_runtime, shots):
+    directory, dataset = data
+    fake = sys.modules["transformers"]
+    fake.GraniteForCausalLM = SimpleNamespace()
+    fake.AutoConfig.from_pretrained = lambda *a, **kw: SimpleNamespace(
+        _commit_hash=SHA, model_type="granite", architectures=["GraniteForCausalLM"], max_position_embeddings=131072)
+    config = bm.RunConfig(bm.GRANITE, SHA, shots, dtype="bfloat16", context_limit=4096)
+    prompts = bm.prepare(dataset, directory, config)["prompts"]
+    _, preflight = bm._tokenizer_preflight(config, prompts, None)
+    assert cpu_runtime["tokenizer"] == (bm.GRANITE, {"revision": SHA, "trust_remote_code": False, "cache_dir": None})
+    assert preflight["loading_class"] == "GraniteForCausalLM"
+    assert not preflight["vision_weights_loaded"]
+    assert preflight["chat_template_configuration"] == {"tokenize": True, "truncation": False, "add_generation_prompt": True}
+    assert preflight["chat_template"] == "native-template" and preflight["context_limit"] == 4096
+    with pytest.raises(bm.Error, match="no reviewed enable_thinking"):
+        bm._tokenizer_preflight(replace(config, thinking="disabled"), prompts, None)
+
+
+@pytest.mark.parametrize("problem", ("revision", "architecture", "missing_loader", "template"))
+def test_granite_rejects_incompatible_configuration(data, cpu_runtime, monkeypatch, problem):
+    directory, dataset = data
+    fake = sys.modules["transformers"]
+    fake.GraniteForCausalLM = SimpleNamespace()
+    loaded = SimpleNamespace(_commit_hash=SHA, model_type="granite", max_position_embeddings=131072)
+    fake.AutoConfig.from_pretrained = lambda *a, **kw: loaded
+    if problem == "revision":
+        loaded._commit_hash = "b" * 40
+    elif problem == "architecture":
+        loaded.model_type = "gpt2"
+    elif problem == "missing_loader":
+        del fake.GraniteForCausalLM
+    else:
+        monkeypatch.setattr(Tokenizer, "apply_chat_template", lambda *a, **kw: "omitted messages")
+    config = bm.RunConfig(bm.GRANITE, SHA, 0, dtype="bfloat16")
+    with pytest.raises(bm.Error):
+        bm._tokenizer_preflight(config, bm.prepare(dataset, directory, config)["prompts"], None)
+
+
+@pytest.mark.parametrize("expected", (5, 475, 0, True))
+def test_complete_record_count_guard_before_gpu_and_outputs(data, tmp_path, cpu_runtime, expected):
+    directory, dataset = data
+    with pytest.raises(bm.Error, match="Expected|positive integer"):
+        bm.run(dataset, directory, tmp_path / "runs", "count", bm.RunConfig("org/model", SHA, 0),
+               expected_records=expected, max_examples=1)
+    assert not cpu_runtime and not (tmp_path / "runs").exists()
+
+
+def test_record_count_guard_allows_smoke_prefix_and_records_requirement(data, tmp_path, cpu_runtime):
+    directory, dataset = data
+    metadata = bm.run(dataset, directory, tmp_path / "runs", "count", bm.RunConfig("org/model", SHA, 0),
+                      expected_records=6, max_examples=1)
+    assert metadata["total_inputs"] == 1
+    manifest = json.loads(Path(str(metadata["output"]) + ".manifest.json").read_text())
+    assert manifest["expected_records"] == 6 and manifest["runtime"]["preflight_records"] == 6
+
+
+def test_slurm_template_pins_reviewed_models_and_is_safe_text():
+    script = (Path(__file__).resolve().parents[1] / "scripts/slurm/benchmark.sbatch").read_bytes()
+    assert b"\r" not in script and script.startswith(b"#!/bin/bash\n")
+    text = script.decode()
+    for setting in ("--partition=ampere", "--gpus=1", "--time=05:55:00", "--array=0,3,5%1",
+                    "--open-mode=append", "--expected-records 475", "--max-new-tokens 512", "--context-limit 4096"):
+        assert setting in text
+    assert bm.MINISTRAL in text and bm.GRANITE in text
+    assert "29439f81c2be264d8d393273f99e7db9c0961120" in text
+    assert "1504002f650e656a0a3789d99574df12e3e94ed0" in text

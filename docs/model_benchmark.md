@@ -2,7 +2,7 @@
 
 `python -m llm_kbc.benchmark` runs one explicitly selected Hugging Face
 causal/instruction model and prompting condition at a time. Repeat the same
-protocol for each of the four researcher-selected models; there is no automatic
+protocol for each of the five researcher-selected models; there is no automatic
 model selection, model registry, GPU scheduling, or RAG. Existing pinned Qwen
 runners, prompts, archived outputs, QLoRA, and the official scorer are unchanged.
 No new inference or benchmark results are established by this implementation.
@@ -45,7 +45,7 @@ python -m llm_kbc.benchmark run --help
 Choose a model and **exact 40-character lowercase Hub commit SHA** explicitly.
 Replace these placeholders; no default model or floating `main` revision is
 selected. Use identical seed, dtype, token budget, dataset and demonstration
-snapshot for the four models. Repeat the commands with each approved model/SHA.
+snapshot for the five models. Repeat the commands with each approved model/SHA.
 
 ```bash
 MODEL='organization/approved-instruction-model'
@@ -72,10 +72,10 @@ python -m llm_kbc.benchmark run --model "$MODEL" --revision "$REVISION" \
 
 All four conditions accept `--model`, `--revision`, `--seed` (default 0),
 `--max-new-tokens` (512), `--dtype` (`float16`, or explicit `bfloat16`),
-`--quantization` (`none` or explicit `nf4`), `--thinking`
+`--quantization` (`none`, explicit `nf4`, or reviewed `fp8-dequantize`), `--thinking`
 (`default`, `enabled`, `disabled`), `--determinism` (`strict` or `warn`),
 `--cache-dir`, `--data-dir`, `--output-root`, and `--max-examples`.
-Use `--dry-run` with any condition. Dry-run validates data, demonstrations,
+Use `--expected-records 475` for the official validation snapshot (also before a smoke prefix is selected). Use `--dry-run` with any condition. Dry-run validates data, demonstrations,
 leakage, configuration and paths; **it cannot verify model availability, access,
 chat-template support, context fit, CUDA support, or GPU memory**. It explicitly
 reports `tokenizer_checked: false`. It does not reserve a run directory.
@@ -151,7 +151,7 @@ artifact writes; `model_load_seconds` is separate. See [evaluation.md](evaluatio
 The original causal-LM path remains available on Transformers 4.57.1. The three
 reviewed conditional-generation architectures below have explicit loaders and
 native text-only chat handling. All paths use safetensors and a single CUDA
-device. NF4 is opt-in; no remote model code, custom templates, automatic dtype
+device. NF4 is opt-in; no remote model code, custom templates, implicit dtype
 changes, CPU/disk offloading, device sharding, or manual special-token
 concatenation is enabled. Missing or
 ambiguous templates, unsupported system roles, omitted/changed message content,
@@ -159,10 +159,10 @@ unknown context limits and deterministic-kernel failures are explicit errors.
 Some model families therefore need a separately reviewed prompt variant or a
 future compatibility change; the CLI will not silently adapt their prompts.
 Model access/license/gating and FP16/BF16 suitability must be checked per model.
-Large models can OOM; no four-model GPU feasibility claim has been established.
+Large models can OOM; no five-model GPU feasibility claim has been established.
 
 Native templates may introduce reasoning defaults or different stopping behavior.
-Inspect the recorded template and smoke outputs before freezing the four-model
+Inspect the recorded template and smoke outputs before freezing the five-model
 protocol. Equal token budgets are comparable settings, not equal text lengths:
 tokenizers differ and 512 tokens may truncate high-cardinality award answers.
 Selection policies differ across shot counts by design; differences are not
@@ -182,200 +182,250 @@ closed-book comparison does not establish RAVEC novelty or superiority.
 API references: [Transformers 4.57.1 chat templates](https://huggingface.co/docs/transformers/v4.57.1/en/chat_templating),
 [generation configuration](https://huggingface.co/docs/transformers/v4.57.1/en/main_classes/text_generation).
 
-## Reviewed conditional-generation models and A100 40 GB configurations
+## Reviewed five-model roster
 
-The following compatibility assessment uses official model cards/configurations
-and Transformers release source. It is **not GPU validation**. The existing HPC
-environment (PyTorch 2.8.0+cu128, Transformers 4.57.1, Accelerate 1.10.1) is not
-upgraded by this project. All zero-/1-/3-/5-shot builders and the official
-evaluation protocol remain unchanged; the planned main conditions are 0/3/5.
+Verified on 2026-11-22 against official Hub repositories/API metadata and pinned
+small configuration files; **no weights were downloaded and no GPU run was made**.
+The active main conditions are 0/3/5 shots; 1-shot remains supported. All use
+seed 0, 512 new tokens, context limit 4096, unchanged messages/selection policies,
+eager attention, batch size one and strict deterministic-algorithm checks.
 
-| Model | Explicit loading class | Existing Transformers 4.57.1 | A100-SXM4-40GB starting configuration |
+| Model | Immutable revision | Loading path | Explicit configuration / status |
 |---|---|---|---|
-| `Qwen/Qwen3.5-9B` | `Qwen3_5ForConditionalGeneration` | Not supported; the config's old `transformers_version` string is not proof of compatibility | BF16 unquantized, or explicit NF4/BF16 as a separate condition |
-| `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | `Mistral3For` + `ConditionalGeneration` | Architecture supported; native `mistral-common` and bitsandbytes are additional requirements | NF4 with BF16 compute; the card estimates ~55 GB for unquantized FP16/BF16 |
-| `google/gemma-4-31B-it` | `Gemma4ForConditionalGeneration` | Not supported | NF4 with BF16 compute; nominal 30.7B parameters alone exceed 40 GB at 16 bits |
+| `Qwen/Qwen2.5-3B-Instruct` | `aa8e72537993ba99e69dfaafa59ed015b17504d1` | Existing `AutoModelForCausalLM` / `qwen2` | Archived baseline; preserve original runner/environment/artifacts |
+| `Qwen/Qwen3.5-9B` | `c202236235762e1c871ad0ccb60c8ee5ba337b9a` | `Qwen3_5ForConditionalGeneration` | Completed 0/3/5-shot per researcher; preserve actual archived configuration/results |
+| `mistralai/Ministral-3-14B-Instruct-2512` | `29439f81c2be264d8d393273f99e7db9c0961120` | `Mistral3For` + `ConditionalGeneration`, inner `ministral3` | **BF16 dequantization of supplied FP8 weights**, full checkpoint, single GPU |
+| `google/gemma-4-31B-it` | `842da3794eaa0b77d5f08bae87a17459d91ff475` | `Gemma4ForConditionalGeneration` | Unchanged explicit NF4/BF16, thinking disabled |
+| `ibm-granite/granite-4.1-8b` | `1504002f650e656a0a3789d99574df12e3e94ed0` | `GraniteForCausalLM`; upstream also registers `AutoModelForCausalLM` | Native BF16, no quantization, native template defaults |
 
-Sources: [Qwen configuration](https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/config.json),
-[Qwen card](https://huggingface.co/Qwen/Qwen3.5-9B),
-[Mistral card](https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506),
-[Mistral 4.57.1 API](https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/mistral3),
-[Gemma card](https://huggingface.co/google/gemma-4-31B-it),
-[Gemma configuration](https://huggingface.co/google/gemma-4-31B-it/blob/842da3794eaa0b77d5f08bae87a17459d91ff475/config.json).
+The split spelling of the Mistral class concatenates to its exact public symbol;
+it avoids a previously confirmed GitHub secret-scanning false positive.
+**Historical only:** `mistralai/Mistral-Small-3.2-24B-Instruct-2506`, revision
+`95a6d26c4bfb886c58daf9d3f7332c857cb27b43`, was the former candidate. It is no
+longer in `TARGETS`, proposed commands or model selection. Its implementation
+history remains in Git (e.g. `be371ae`); no historical outputs are removed.
 
-The two Mistral class-name fragments concatenate to the original public symbol;
-this spelling avoids a false-positive API-key detection in source scanning.
+### Upstream verification and licenses
 
-All three are multimodal checkpoints, but the benchmark supplies **text only**.
-It loads their complete conditional-generation checkpoints, including unused
-vision weights. It does not extract a language submodule or initialize missing
-weights. Qwen/Gemma use their pinned native tokenizer/Jinja serialization; images
-and an image processor are unnecessary for these text-only inputs. This follows
-their conditional model APIs accepting text input IDs without image tensors;
-the cards' multimodal examples use processors. No vendor system prompt replaces
-the thesis prompt.
+New models' official metadata and cards declare **Apache-2.0**. Preserve their
+attribution/terms with any redistributed weights; this repository vendors none.
+The older Qwen2.5 model has a custom Qwen license; Qwen3.5 and this Gemma4
+checkpoint declare Apache-2.0. Check the actual pinned repository's terms/access
+before redistribution rather than assuming terms from older model families.
 
-Mistral's official repository contains `tekken.json`, not a standard tokenizer
-JSON/Jinja template. We fetch **only that tokenizer file at the same explicit
-model SHA**, hash it, and load it locally through Transformers'
-`MistralCommonTokenizer` (4.57.1) or `MistralCommonBackend` (5.5.0). The
-`mistral-common` library performs its native chat encoding; there is no Jinja
-template to hash, so template/hash fields are `null`, and tokenizer-file hash,
-backend/version and actual serialized prompts are recorded instead. In 4.57.1,
-the native encoder implicitly handles a final user query and rejects an explicit
-`add_generation_prompt`; in 5.5.0 that argument is a documented no-op. Both use
-the same native API, not handcrafted control tokens. See the reviewed
-[4.57.1 implementation](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/tokenization_mistral_common.py)
-and [5.5.0 implementation](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/tokenization_mistral_common.py).
+- [Ministral official API](https://huggingface.co/api/models/mistralai/Ministral-3-14B-Instruct-2512),
+  [pinned card](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512/blob/29439f81c2be264d8d393273f99e7db9c0961120/README.md),
+  [configuration](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512/blob/29439f81c2be264d8d393273f99e7db9c0961120/config.json).
+- [Granite official API](https://huggingface.co/api/models/ibm-granite/granite-4.1-8b),
+  [pinned card](https://huggingface.co/ibm-granite/granite-4.1-8b/blob/1504002f650e656a0a3789d99574df12e3e94ed0/README.md),
+  [configuration](https://huggingface.co/ibm-granite/granite-4.1-8b/blob/1504002f650e656a0a3789d99574df12e3e94ed0/config.json),
+  [Transformers 5.5 Auto mapping](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/models/auto/modeling_auto.py).
+- Retained [Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct),
+  [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/config.json)
+  and [Gemma4](https://huggingface.co/google/gemma-4-31B-it/blob/842da3794eaa0b77d5f08bae87a17459d91ff475/README.md)
+  official repositories. Their previous loaders/settings are unchanged.
 
-`--thinking default` preserves the checkpoint template's default. Qwen's reviewed
-template enables thinking by default; the explicit `--thinking disabled` example
-sets its native `enable_thinking=False`. Gemma's reviewed canonical template
-supports the same switch and, with thinking disabled, prefills the empty thought
-channel before generation. Mistral Small 3.2 has no reviewed switch and rejects
-nondefault thinking flags. No reasoning content is extracted or stripped from
-generated text: the existing decoder and strict JSON parser remain in use, so
-unexpected reasoning/prose still becomes a logged abstention. Thinking mode is
-an experimental setting, not a harmless implementation detail. The 512-token
-budget is never enlarged to accommodate reasoning. See the
-[Qwen native template](https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/chat_template.jinja)
-and [Gemma native template](https://huggingface.co/google/gemma-4-31B-it/blob/842da3794eaa0b77d5f08bae87a17459d91ff475/chat_template.jinja).
+Small-file SHA256s independently computed from the pinned upstream bytes:
 
-### Separately isolated environment
+| File | Ministral | Granite |
+|---|---|---|
+| `config.json` | `fc51295bdc0b39c015c9c3ca5d649de183eae73a23b8cbab1a0e055be8d5fa04` | `dea9d856cb57018117fe2fe3366f37cb4aa39424890061db2c0045a6a4efbda0` |
+| `generation_config.json` | `e0923390059f84a9180b00e5501778acc45ea9856cd7f2fd68208b360927c677` | `9117fb03fed79dbb459373edeef9a3eec966bce52a1842e03a6716e83117f0d1` |
+| `tokenizer_config.json` | `4a05af595aa11c3436d3b68a616219ae99b303426f708a12b31bc9ce32530728` | `a5ec5daab12ba090a90f3dd169c8f9c275557013a87b9c1258dc7cb497a35c86` |
 
-`benchmark-modern` pins Transformers **5.5.0**, whose release source includes both
-[Qwen3.5](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/models/qwen3_5/modeling_qwen3_5.py)
-and [Gemma4](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/models/gemma4/modeling_gemma4.py).
-This is a reviewed target release, not a claim about the earliest supported
-version. Its declared requirements accept torch>=2.4, Accelerate>=1.1.0,
-bitsandbytes>=0.46.1 and Hub>=1.5,<2. Accordingly, this separate extra keeps torch
-2.8.0 and Accelerate 1.10.1, pins bitsandbytes 0.48.1 and Hub 1.5.0, and includes
-`mistral-common[image]==1.10.0`, Pillow 10.4.0 and matching torchvision 0.23.0 for
-conditional-model imports. These are source-level compatibility checks;
-installation/resolution and CUDA kernels have **not** been exercised here.
-References: [release dependencies](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/dependency_versions_table.py),
-[quantization minimums](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/utils/import_utils.py),
-[official torch/torchvision CUDA pairing](https://pytorch.org/get-started/previous-versions/#v280).
+### Ministral: FP8 source, explicit BF16 runtime
 
-Commands below are instructions only, not operations performed by this task.
-Use a **new environment**, ideally for all three models to reduce software-stack
-confounding. Do not combine `benchmark-modern` with `inference` or `fine-tuning`:
-their intentionally preserved Transformers/Hub pins conflict. No training/PEFT
-compatibility is claimed for this inference environment.
+The pinned repository supplies `tekken.json`, HF tokenizer/config/Jinja files,
+four HF safetensors shards plus index, and separate consolidated weights. Use
+the HF loader's complete checkpoint, including the unused Pixtral vision tower;
+no submodel extraction, missing-weight initialization or vision inputs.
+The configuration declares static FP8, per-tensor scaling (`weight_block_size:
+null`), BF16 for remaining weights, and a 262144-token text context.
+
+An A100 (compute capability 8.0) cannot use the reviewed native FP8 path.
+Transformers 5.5 would automatically dequantize below capability 8.9; we instead
+**require** `--quantization fp8-dequantize --dtype bfloat16`. The adapter passes
+`FineGrainedFP8Config(dequantize=True)` with all original scaling/skip-module
+settings preserved, and `device_map={"": 0}`. Both implicit conversion (`none`)
+and unreviewed FP8-to-NF4 conversion are rejected for this model. BF16 expansion
+cannot recover information lost during the upstream FP8 quantization; this is
+not an original unquantized BF16 checkpoint. Native FP8 is not offered here.
+Sources: [card BF16 instructions](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512/blob/29439f81c2be264d8d393273f99e7db9c0961120/README.md),
+[5.5 FP8 hardware checks](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/quantizers/quantizer_finegrained_fp8.py),
+[dequantization implementation](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/integrations/finegrained_fp8.py),
+[configuration/loading attributes](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/utils/quantization_config.py).
+
+Use the native `MistralCommonBackend` in 5.5, with pinned local `tekken.json`,
+not a handcrafted template or a silent switch to HF Jinja. The card requires
+mistral-common >=1.8.6; the existing isolated pin 1.10.0 meets that requirement.
+Its encoder handles system/user/assistant turns and the final assistant boundary;
+`add_generation_prompt` is a documented no-op. Template/hash are null for this
+backend: record tokenizer-file SHA, library version, rendered chats and token-ID
+hashes instead. Original message contents must survive serialization unchanged.
+No vendor system prompt replaces ours. `--thinking default` is required.
+The pinned generation config declares BOS 1, EOS 2, PAD 11; native tokenizer pad
+availability may differ, so the existing declared-EOS fallback remains recorded.
+[Native tokenizer implementation](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/tokenization_mistral_common.py).
+
+The official parameter inventory totals 13,945,031,680, including vision weights:
+BF16 weight storage alone is about **27.9 GB decimal (26.0 GiB)**. A single A100
+40GB is plausible at batch one/context 4096, but KV cache, conversion temporaries,
+activations and CUDA overhead need measurement. The card's smaller FP8 memory
+claims do not establish A100 BF16 fit. No automatic offload or retry is allowed.
+
+### Granite: native causal LM and chat formatting
+
+The pinned checkpoint is `model_type=granite`, `architectures=[GraniteForCausalLM]`,
+BF16, with a 131072-token context and no upstream quantization configuration.
+Transformers' Auto mapping supports it; we select the explicit Granite class.
+The repository includes tokenizer JSON/config, GPT2 vocab/merges, Jinja template,
+special-token map, generation config and four safetensors shards plus index.
+Native `AutoTokenizer.apply_chat_template()` inserts
+`<|start_of_role|>ROLE<|end_of_role|>`, then content and `<|end_of_text|>`;
+`add_generation_prompt=True` provides the assistant header. These tokens are
+**never assembled in benchmark code**. No thinking/template override is applied.
+The pinned config declares BOS/EOS 100257 (`<|end_of_text|>`) and PAD 100256
+(`<|pad|>`); preserve the model's EOS configuration. Sources:
+[pinned template](https://huggingface.co/ibm-granite/granite-4.1-8b/blob/1504002f650e656a0a3789d99574df12e3e94ed0/chat_template.jinja),
+[tokenizer config](https://huggingface.co/ibm-granite/granite-4.1-8b/blob/1504002f650e656a0a3789d99574df12e3e94ed0/tokenizer_config.json).
+Its 8,791,592,960 parameters need about **17.6 GB decimal (16.4 GiB)** for BF16
+weights, before runtime overhead. BF16/no quantization is the proposed A100
+configuration, not a GPU-verified fit guarantee.
+
+### Separately isolated environment (unchanged pins)
+
+Keep the existing QLoRA/inference Transformers 4.57.1 environment untouched.
+`benchmark-modern` already pins Transformers 5.5.0, torch 2.8.0, torchvision
+0.23.0, Accelerate 1.10.1, bitsandbytes 0.48.1, Hub 1.5.0,
+mistral-common[image] 1.10.0 and Pillow 10.4.0. No dependency changes are needed.
+These are source/API compatibility checks; installing the modern stack and
+exercising its CUDA kernels remain HPC checks. Do not combine these extras with
+`inference` or `fine-tuning` (intentionally conflicting Transformers/Hub pins).
+[Release dependencies](https://github.com/huggingface/transformers/blob/v5.5.0/src/transformers/dependency_versions_table.py),
+[torch/torchvision pairing](https://pytorch.org/get-started/previous-versions/#v280).
+
+For a new environment only (do not recreate an existing completed-run environment):
 
 ```bash
-# From a Git checkout; refuse to reuse an existing environment.
 BENCH_ENV="$HOME/.venvs/llm-kbc-benchmark-modern"
 test ! -e "$BENCH_ENV" || exit 1
 python3.11 -m venv "$BENCH_ENV"
-source "$BENCH_ENV/bin/activate"
-python -m pip install torch==2.8.0 torchvision==0.23.0 \
+"$BENCH_ENV/bin/python" -m pip install torch==2.8.0 torchvision==0.23.0 \
   --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -e ".[benchmark-modern,evaluation]"
-python -m pip check
-python -m pip freeze
+"$BENCH_ENV/bin/python" -m pip install -e ".[benchmark-modern,evaluation]"
+"$BENCH_ENV/bin/python" -m pip check
 ```
 
-Keep the resulting environment listing and Slurm logs with each run. Transitive
-dependencies are not a complete lockfile. The legacy Mistral path can instead
-use a separately reproduced 4.57.1 environment with pinned
-`mistral-common[image]==1.10.0` and `bitsandbytes==0.48.1`; do not install these
-into a shared environment implicitly. Missing loading classes/dependencies fail
-explicitly; no command installs or upgrades anything automatically.
+Verify the actual GPU driver supports the chosen CUDA wheel. Site documentation
+can lag the installed driver; this is not permission to upgrade a shared stack.
+Record `pip freeze`, driver/runtime and Slurm logs for each run. Dependencies are
+pinned at the top level, not a complete transitive lockfile.
 
-### Exact pinned GPU smoke commands
+### Exact Aristotle smoke/full commands
 
-These model commits were verified through official Hub configuration/API sources
-during this review; they are new candidate configurations, not revisions of an
-archived baseline. Run on an allocated GPU from the repository root, **only
-after approval to execute inference**. A configurable `--cache-dir` may be added.
-The loops cover the planned zero-/3-/5-shot conditions; `--shots 1` is also
-supported. For offline preparation only, append `--dry-run` (it does not inspect
-or download the models/tokenizers).
+Run from the repository root, using the existing verified modern environment.
+The single parameterized [Slurm template](../scripts/slurm/benchmark.sbatch)
+provides both new-model smoke/full configurations. It requests **one ampere GPU**
+(`--gpus=1`), 96GB host RAM and 05:55:00 per array task. Each shot condition gets
+its own job; the array throttles to one concurrent task. It does not put all
+three full conditions into one six-hour allocation. Sources:
+[Aristotle GPU directives](https://hpc.it.auth.gr/jobs/gpu-slurm/),
+[six-hour ampere limit](https://hpc.it.auth.gr/nodes-summary/).
+
+```bash
+export BENCH_PYTHON="$HOME/.venvs/llm-kbc-benchmark-modern/bin/python"
+# Optional: configure scratch/cache paths explicitly; no username is hardcoded.
+# export BENCH_CACHE_DIR=/your/existing/huggingface-cache
+# export BENCH_OUTPUT_ROOT=/your/new/benchmark-results
+mkdir -p results/slurm
+bash -n scripts/slurm/benchmark.sbatch
+"$BENCH_PYTHON" -m pip check
+
+# CPU-only preparation: no tokenizer/network/weights/output creation.
+"$BENCH_PYTHON" -m llm_kbc.benchmark run \
+  --model mistralai/Ministral-3-14B-Instruct-2512 \
+  --revision 29439f81c2be264d8d393273f99e7db9c0961120 --shots 3 \
+  --dtype bfloat16 --quantization fp8-dequantize --thinking default \
+  --seed 0 --max-new-tokens 512 --context-limit 4096 --determinism strict \
+  --dataset data/lm_kbc_2026/val.jsonl --expected-records 475 --run-id preflight-v1 --dry-run
+
+# Three five-record GPU smokes each, in distinct model/condition/run directories.
+sbatch scripts/slurm/benchmark.sbatch ministral smoke v1
+sbatch scripts/slurm/benchmark.sbatch granite smoke v1
+
+# ONLY after all smoke artifacts and the checklist below have been reviewed:
+sbatch scripts/slurm/benchmark.sbatch ministral full v1
+sbatch scripts/slurm/benchmark.sbatch granite full v1
+```
+
+The script pins both new revisions and verifies exact train/validation file
+hashes, then requires all **475** validation identities before selecting any
+smoke prefix. It records environment packages and GPU inventory in append-only
+Slurm output. Add site-required account flags to `sbatch` if needed; no account
+is guessed. Cached snapshots are reusable, but run directories are never reused;
+choose a fresh reviewed tag for repeats. Output IDs include model/revision,
+shots, precision, smoke/full and tag. No automatic scoring/resume is performed.
+The pre-timeout INT requests diagnostic finalization; a hard kill may leave
+metadata at running, but cannot publish a partial final prediction file.
+If throughput predicts >05:55 per full condition, stop and plan an explicitly
+reviewed collection protocol; do not silently shard/resume or extend budgets.
+
+Gemma's existing explicit configuration stays unchanged. On an allocated GPU:
 
 ```bash
 for SHOTS in 0 3 5; do
-  python -m llm_kbc.benchmark run --model Qwen/Qwen3.5-9B \
-    --revision c202236235762e1c871ad0ccb60c8ee5ba337b9a \
-    --shots "$SHOTS" --dtype bfloat16 --quantization none --thinking disabled \
-    --determinism strict --seed 0 --max-new-tokens 512 --context-limit 4096 \
-    --dataset data/lm_kbc_2026/val.jsonl --run-id bf16-smoke-v1 --max-examples 5
-done
-
-for SHOTS in 0 3 5; do
-  python -m llm_kbc.benchmark run \
-    --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
-    --revision 95a6d26c4bfb886c58daf9d3f7332c857cb27b43 \
-    --shots "$SHOTS" --dtype bfloat16 --quantization nf4 --thinking default \
-    --determinism strict --seed 0 --max-new-tokens 512 --context-limit 4096 \
-    --dataset data/lm_kbc_2026/val.jsonl --run-id nf4-smoke-v1 --max-examples 5
-done
-
-for SHOTS in 0 3 5; do
-  python -m llm_kbc.benchmark run --model google/gemma-4-31B-it \
+  "$BENCH_PYTHON" -m llm_kbc.benchmark run --model google/gemma-4-31B-it \
     --revision 842da3794eaa0b77d5f08bae87a17459d91ff475 \
     --shots "$SHOTS" --dtype bfloat16 --quantization nf4 --thinking disabled \
     --determinism strict --seed 0 --max-new-tokens 512 --context-limit 4096 \
-    --dataset data/lm_kbc_2026/val.jsonl --run-id nf4-smoke-v1 --max-examples 5
+    --dataset data/lm_kbc_2026/val.jsonl --expected-records 475 \
+    --run-id nf4-smoke-v1 --max-examples 5
 done
 ```
 
-Full runs use the same commands with `--max-examples 5` removed and fresh run IDs
-(`bf16-val-v1` or `nf4-val-v1`). Do not score smoke outputs. No full runs or GPU
-smokes were performed while implementing this support.
+Full Gemma commands remove `--max-examples 5` and use a fresh `nf4-val-v1` run ID;
+run each condition within its own reviewed allocation. The completed Qwen3.5
+and archived Qwen2.5 experiments are references, not requests to rerun them.
+Their old entry points, prompt versions, manifests, outputs and metrics remain
+untouched. Do not overwrite historical artifacts to make configurations match.
 
-### Precision, determinism, memory and remaining GPU checks
+### Fairness and verification checklist
 
-NF4 uses bitsandbytes 4-bit linear weights, double quantization, explicit BF16
-(or FP16) computation, and `device_map={"": 0}`. It never calls `.to()` on an
-already quantized/dispatched model. Some embeddings, norms, output heads and
-nonlinear/vision components can remain at higher precision; **4-bit does not
-mean total memory equals parameter count / 2 bytes**. No CPU/disk offload or
-automatic precision fallback is enabled. A weight-only lower-bound check rejects
-clearly impossible 16-bit target runs before weight loading; passing it is not a
-memory-fit guarantee. See [official quantization guidance](https://huggingface.co/docs/transformers/v4.57.1/en/quantization/bitsandbytes).
+This comparison concerns **model plus inference configuration**, not architecture
+alone: FP8-origin/BF16 Ministral, native BF16 Granite, NF4/BF16 Gemma and actual
+archived Qwen configurations differ. Thinking modes and tokenizers also differ.
+Retain the actual archived settings; do not relabel prior results as if produced
+with this new stack. A separately declared matched-precision study is optional,
+not a reason to change completed experiments. Native templates add different
+headers/EOS and equal token budgets do not imply equal answer lengths. Awards
+may truncate at 512 tokens; strict failures stay logged abstentions, without
+format repair/retries. Validation-based model selection is not held-out evidence.
 
-The examples mix unquantized Qwen with quantized larger models for feasibility;
-differences reflect **model plus inference configuration**. For a controlled
-quantized comparison, explicitly run Qwen with `--quantization nf4` and a fresh
-`nf4-*` run ID too. Treat it as a separate condition. Do not claim a pure
-architecture advantage from different precision, thinking mode or software.
+Before full runs, verify on the **actual A100 and isolated environment**:
 
-Strict PyTorch deterministic algorithms remain the default. Unsupported kernels
-raise; there is no automatic retry in nondeterministic mode. An explicitly
-declared `--determinism warn` permits PyTorch's warn-only behavior and records the
-choice and captured Python warnings. Third-party bitsandbytes/DeltaNet/fused
-kernels may not report every nondeterministic operation through PyTorch. Greedy
-decoding is not a universal bitwise reproducibility guarantee. Library versions,
-optional hybrid-kernel availability, native template, dtype and quantization must
-be interpreted together; Transformers logger output also belongs in Slurm logs.
+- [ ] `pip check`, native class/config/tokenizer imports, access/licenses, exact
+  resolved commits, CUDA driver/wheel compatibility and available scratch space.
+- [ ] All 475 identities, reviewed training SHA, all six relations, unchanged
+  ordered demonstrations, no gold in queries and no demonstration-pair leakage.
+- [ ] All full-file 0/3/5-shot template/token counts fit input + 512 <=4096;
+  native system/user/assistant serialization, token-ID hashes and EOS are intact.
+- [ ] Ministral really loads the full FP8-origin checkpoint as BF16 with original
+  per-tensor scales and no CPU/disk offload; confirm converted module coverage
+  and finite logits. Source inspection/mocks cannot verify conversion numerics.
+- [ ] Granite native causal model/template, Gemma NF4 coverage, and unchanged
+  Qwen paths behave as recorded; do not silently substitute loading classes.
+- [ ] Review JSON validity, raw/failure logs, explicit abstentions, completeness,
+  hashes and metadata; never score smoke outputs or the unlabeled test split.
+- [ ] Measure load/generation time, host RAM, disk, allocator peaks and device-wide
+  VRAM. PyTorch peaks exclude some CUDA/third-party allocations. Confirm headroom
+  for longest prompts and throughput within each job's six-hour partition limit.
+- [ ] Inspect deterministic-kernel errors/warnings and repeated fresh-process
+  smoke outputs. Strict algorithms raise on unsupported kernels; no warn-mode
+  fallback/retry is automatic. Third-party kernels may escape PyTorch checks.
+- [ ] Test interruption on expendable smoke IDs; archive all five artifacts and
+  Slurm stderr. Before-run failures have no artifacts; hard kills can interrupt
+  diagnostic writes. No multi-file transaction/power-loss guarantee is claimed.
 
-Manifests retain rendered chats and hashes of token IDs. Generation checks the
-actual token IDs against preflight, failing on template drift rather than
-silently generating a different prompt. Metadata adds loading class/architecture,
-quantization configuration, thinking/determinism settings, package versions,
-implementation module, GPU compute capability/total/free memory, and peak PyTorch
-allocated/reserved bytes. Peak counters reset before model loading and update
-after generation, including a failing generation; shared mutable runtime fields
-are saved by the existing interruption handler. The prepared manifest reflects
-loading-time information, while final metadata contains generation-time peaks
-and warnings. These allocator peaks exclude some CUDA/third-party allocations
-and are **not NVML/device-wide VRAM measurements**. Timing definitions above are
-unchanged. Failures before the shared artifact runner leave no run artifacts;
-archive their Slurm stderr rather than inventing completion metadata.
-
-Still requiring verification on the actual A100/driver/runtime:
-
-- Resolve/install the isolated environment, run `pip check`, and verify CUDA
-  versions and all three real model/tokenizer imports.
-- Confirm tokenizer role handling, pinned files, 0/1/3/5-shot token counts,
-  native non-thinking prefixes, preserved EOS IDs and strict JSON behavior.
-- Run fresh-process 5-record GPU smokes and compare repeated greedy outputs;
-  inspect any deterministic-kernel warnings/errors before declaring a protocol.
-- Measure allocator peaks and device-wide VRAM, host RAM, disk/cache use and
-  throughput; confirm headroom for the longest award prompts and 512 new tokens.
-- Verify bitsandbytes conversion/quantized module coverage and Qwen's hybrid
-  fallback/fast-kernel path. Neither numerical stability nor NF4 memory fit is
-  established by mocked tests.
-- Exercise a controlled interruption on expendable smoke paths and confirm no
-  incomplete prediction publication. Keep archived Qwen experiments untouched.
+No GPU compatibility, memory fit, bitwise determinism or performance result is
+established by CPU-only tests. The official evaluator and scientific limitations
+above remain unchanged.

@@ -22,15 +22,20 @@ from .prediction_io import load_predictions, validate_prediction
 
 
 Error = zero_shot.InferenceError
+MINISTRAL = "mistralai/Ministral-3-14B-Instruct-2512"
+GRANITE = "ibm-granite/granite-4.1-8b"
 # Reviewed checkpoint architectures. Load the complete checkpoint, including its
 # unused vision tower, rather than silently extracting/reinitializing a text model.
 TARGETS = {
+    "Qwen/Qwen2.5-3B-Instruct": ("qwen2", "AutoModelForCausalLM", 3_000_000_000),
     "Qwen/Qwen3.5-9B": ("qwen3_5", "Qwen3_5ForConditionalGeneration", 9_000_000_000),
     # Adjacent literals preserve the public class name without a key-shaped source token.
-    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": ("mistral3", "Mistral3For" "ConditionalGeneration", 24_000_000_000),
+    MINISTRAL: ("mistral3", "Mistral3For" "ConditionalGeneration", 13_945_031_680),
     "google/gemma-4-31B-it": ("gemma4", "Gemma4ForConditionalGeneration", 30_000_000_000),
+    GRANITE: ("granite", "GraniteForCausalLM", 8_791_592_960),
 }
-CONDITIONAL_CLASSES = {model_type: name for model_type, name, _ in TARGETS.values()}
+LOADING_CLASSES = {model_type: name for model_type, name, _ in TARGETS.values()}
+CONDITIONAL_CLASSES = {key: LOADING_CLASSES[key] for key in ("qwen3_5", "mistral3", "gemma4")}
 
 
 @dataclass(frozen=True)
@@ -62,8 +67,13 @@ class RunConfig:
             raise Error("dtype must be float16 or bfloat16")
         if self.context_limit is not None and (type(self.context_limit) is not int or self.context_limit < 1):
             raise Error("Context limit must be a positive integer")
-        if self.quantization not in ("none", "nf4"):
-            raise Error("Quantization must be none or nf4")
+        if self.quantization not in ("none", "nf4", "fp8-dequantize"):
+            raise Error("Quantization must be none, nf4 or fp8-dequantize")
+        if self.model == MINISTRAL:
+            if self.quantization != "fp8-dequantize" or self.dtype != "bfloat16":
+                raise Error("Ministral's FP8 checkpoint requires explicit --quantization fp8-dequantize --dtype bfloat16")
+        elif self.quantization == "fp8-dequantize":
+            raise Error("fp8-dequantize is reviewed only for the Ministral checkpoint")
         if self.thinking not in ("default", "enabled", "disabled"):
             raise Error("Thinking must be default, enabled or disabled")
         if self.determinism not in ("strict", "warn"):
@@ -160,7 +170,7 @@ def _versions() -> dict:
 
 
 def _loading_class(transformers, model_type: str):
-    name = CONDITIONAL_CLASSES.get(model_type, "AutoModelForCausalLM")
+    name = LOADING_CLASSES.get(model_type, "AutoModelForCausalLM")
     loader = getattr(transformers, name, None)
     if loader is None:
         raise Error(f"Installed Transformers lacks {name}; use the documented isolated benchmark-modern environment")
@@ -190,11 +200,22 @@ def _tokenizer_preflight(config: RunConfig, prompts: list, cache_dir: Path | Non
         raise Error("Checkpoint architecture disagrees with the reviewed model ID")
     _, loading_class = _loading_class(transformers, model_type)
     text_config = model_config.get_text_config() if hasattr(model_config, "get_text_config") else model_config
+    checkpoint_quantization = None
+    if config.model == MINISTRAL:
+        checkpoint_quantization = getattr(model_config, "quantization_config", None)
+        if (not isinstance(checkpoint_quantization, dict)
+                or checkpoint_quantization.get("quant_method") != "fp8"
+                or checkpoint_quantization.get("activation_scheme") != "static"
+                or checkpoint_quantization.get("weight_block_size", "absent") is not None
+                or getattr(text_config, "model_type", None) != "ministral3"):
+            raise Error("Ministral checkpoint differs from the reviewed static, per-tensor FP8 configuration")
+        if not hasattr(transformers, "FineGrainedFP8Config"):
+            raise Error("Explicit FP8 dequantization requires the isolated benchmark-modern environment")
     chat_kwargs = {"add_generation_prompt": True}
     tokenizer_file = None
     if model_type == "mistral3":
         if config.thinking != "default":
-            raise Error("Mistral Small 3.2 has no enable_thinking switch; use --thinking default")
+            raise Error("This Mistral tokenizer has no enable_thinking switch; use --thinking default")
         from huggingface_hub import hf_hub_download
 
         tokenizer_file = Path(hf_hub_download(config.model, "tekken.json", revision=config.revision, cache_dir=cache_dir))
@@ -245,7 +266,7 @@ def _tokenizer_preflight(config: RunConfig, prompts: list, cache_dir: Path | Non
         row["rendered_chat"] = rendered
         row["input_ids_sha256"] = hashlib.sha256(json.dumps(tokens).encode("utf-8")).hexdigest()
         counts.append(len(tokens))
-    return tokenizer, {
+    preflight = {
         "resolved_revision": resolved, "context_limit": limit,
         "model_type": model_type, "architectures": getattr(model_config, "architectures", None),
         "loading_class": loading_class, "text_only_inputs": True, "vision_weights_loaded": model_type in CONDITIONAL_CLASSES,
@@ -260,6 +281,9 @@ def _tokenizer_preflight(config: RunConfig, prompts: list, cache_dir: Path | Non
         "prompt_token_hashes": {_chat_hash(row["messages"]): row["input_ids_sha256"] for row in prompts},
         "preflight_records": len(counts), "input_tokens_min": min(counts), "input_tokens_max": max(counts),
     }
+    if checkpoint_quantization is not None:
+        preflight["checkpoint_quantization"] = checkpoint_quantization
+    return tokenizer, preflight
 
 
 def _load_generator(config: RunConfig, tokenizer, preflight: dict, cache_dir: Path | None):
@@ -285,10 +309,10 @@ def _load_generator(config: RunConfig, tokenizer, preflight: dict, cache_dir: Pa
     loader, loading_class = _loading_class(transformers, preflight.get("model_type", ""))
     properties = torch.cuda.get_device_properties(0)
     free_bytes, _ = torch.cuda.mem_get_info(0)
-    if config.model in TARGETS and config.quantization == "none":
+    if config.model in TARGETS and config.quantization in ("none", "fp8-dequantize"):
         weight_floor = TARGETS[config.model][2] * 2  # Both allowed dtypes occupy two bytes.
         if weight_floor >= free_bytes:
-            raise Error("Nominal 16-bit weights alone exceed free GPU memory; explicitly select --quantization nf4")
+            raise Error("Nominal 16-bit weights alone exceed free GPU memory; this configuration cannot fit")
     load_kwargs = {
         "revision": config.revision, "cache_dir": cache_dir, "trust_remote_code": False,
         "torch_dtype": getattr(torch, config.dtype), "attn_implementation": "eager", "use_safetensors": True,
@@ -304,6 +328,17 @@ def _load_generator(config: RunConfig, tokenizer, preflight: dict, cache_dir: Pa
             load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=getattr(torch, config.dtype),
         )
+        quantization = quantized.to_dict()
+        load_kwargs.update(quantization_config=quantized, device_map={"": 0})
+    elif config.quantization == "fp8-dequantize":
+        from transformers import FineGrainedFP8Config
+
+        source = preflight.get("checkpoint_quantization")
+        if not isinstance(source, dict) or source.get("quant_method") != "fp8":
+            raise Error("Missing reviewed FP8 checkpoint configuration from tokenizer preflight")
+        # Preserve the checkpoint's per-tensor scaling and static activation scheme.
+        # The config class defaults to blockwise scaling, which is inappropriate here.
+        quantized = FineGrainedFP8Config(**{**source, "dequantize": True})
         quantization = quantized.to_dict()
         load_kwargs.update(quantization_config=quantized, device_map={"": 0})
     runtime_warnings, memory = [], {}
@@ -387,12 +422,19 @@ def _load_generator(config: RunConfig, tokenizer, preflight: dict, cache_dir: Pa
 
 
 def run(dataset: Path, data_dir: Path, root: Path, run_id: str, config: RunConfig, *,
-        dry_run: bool = False, max_examples: int | None = None, cache_dir: Path | None = None) -> dict:
+        dry_run: bool = False, max_examples: int | None = None, cache_dir: Path | None = None,
+        expected_records: int | None = None) -> dict:
     """Preflight the whole file, optionally generate a prefix; reserve a fresh run directory."""
     if max_examples is not None and (type(max_examples) is not int or max_examples < 1):
         raise Error("max_examples must be a positive integer")
+    if expected_records is not None and (type(expected_records) is not int or expected_records < 1):
+        raise Error("expected_records must be a positive integer")
     output = output_path(root, config, run_id)
     prepared = prepare(dataset, data_dir, config)
+    if expected_records is not None:
+        if len(prepared["prompts"]) != expected_records:
+            raise Error(f"Expected {expected_records} input records, found {len(prepared['prompts'])}")
+        prepared["expected_records"] = expected_records
     prompts = prepared["prompts"][:max_examples]
     summary = {
         **prepared, "output": str(output.resolve()), "run_id": run_id,
@@ -409,7 +451,7 @@ def run(dataset: Path, data_dir: Path, root: Path, run_id: str, config: RunConfi
         if config.model in TARGETS or config.quantization == "nf4":
             raise Error(
                 "Missing model/quantization dependency; use the documented isolated benchmark-modern "
-                "environment or reviewed legacy Mistral stack. No packages are installed automatically. "
+                "environment. No packages are installed automatically. "
                 f"Import failure: {error}"
             ) from error
         raise Error('Install the existing inference extra: python -m pip install -e ".[inference]"') from error
@@ -518,9 +560,10 @@ def main(argv=None) -> int:
     runner.add_argument("--seed", type=int, default=0)
     runner.add_argument("--max-new-tokens", type=int, default=512)
     runner.add_argument("--max-examples", type=int)
+    runner.add_argument("--expected-records", type=int, help="Require this complete input count before selecting a smoke prefix")
     runner.add_argument("--dtype", choices=("float16", "bfloat16"), default="float16")
     runner.add_argument("--context-limit", type=int)
-    runner.add_argument("--quantization", choices=("none", "nf4"), default="none")
+    runner.add_argument("--quantization", choices=("none", "nf4", "fp8-dequantize"), default="none")
     runner.add_argument("--thinking", choices=("default", "enabled", "disabled"), default="default")
     runner.add_argument("--determinism", choices=("strict", "warn"), default="strict")
     runner.add_argument("--cache-dir", type=Path)
@@ -535,7 +578,8 @@ def main(argv=None) -> int:
             config = RunConfig(args.model, args.revision, args.shots, args.seed, args.max_new_tokens,
                                args.dtype, args.context_limit, args.quantization, args.thinking, args.determinism)
             result = run(args.dataset, args.data_dir, args.output_root, args.run_id, config,
-                         dry_run=args.dry_run, max_examples=args.max_examples, cache_dir=args.cache_dir)
+                         dry_run=args.dry_run, max_examples=args.max_examples, cache_dir=args.cache_dir,
+                         expected_records=args.expected_records)
         else:
             result = report(args.data_dir, args.split, args.predictions)
     except (DatasetError, Error, EvaluationError, OSError, RuntimeError, ValueError, KeyError) as error:

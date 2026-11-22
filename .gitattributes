@@ -1,3 +1,5 @@
 # Preserve vendored upstream bytes so recorded checksums survive Git checkouts.
 src/llm_kbc/_vendor/lm_kbc_2026/evaluate.py -text
 src/llm_kbc/_vendor/lm_kbc_2026/LICENSE -text
+# Slurm rejects CRLF scripts on Windows-origin checkouts.
+scripts/slurm/*.sbatch text eol=lf

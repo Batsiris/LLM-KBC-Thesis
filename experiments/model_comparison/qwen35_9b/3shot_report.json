@@ -1,0 +1,119 @@
+{
+  "evaluation": {
+    "benchmark": "lm-kbc-2026",
+    "split": "val",
+    "overall": {
+      "macro-p": 0.5000677166208286,
+      "macro-r": 0.5207264713507909,
+      "macro-f1": 0.42299578080765105,
+      "micro-p": 0.46416938110749184,
+      "micro-r": 0.1445966514459665,
+      "micro-f1": 0.2205029013539652
+    },
+    "per_relation": {
+      "awardWonBy": {
+        "macro-p": 0.8137931034482758,
+        "macro-r": 0.013793103448275862,
+        "macro-f1": 0.013793103448275862,
+        "micro-p": 0.05405405405405406,
+        "micro-r": 0.0027434842249657062,
+        "micro-f1": 0.005221932114882507
+      },
+      "companyTradesAtStockExchange": {
+        "macro-p": 0.8061764705882354,
+        "macro-r": 0.7225,
+        "macro-f1": 0.6323433583959899,
+        "micro-p": 0.5384615384615384,
+        "micro-r": 0.5526315789473685,
+        "micro-f1": 0.5454545454545455
+      },
+      "countryLandBordersCountry": {
+        "macro-p": 0.9820086367880483,
+        "macro-r": 0.9405462184873947,
+        "macro-f1": 0.9492754266110663,
+        "micro-p": 0.9542857142857143,
+        "micro-r": 0.9329608938547486,
+        "micro-f1": 0.943502824858757
+      },
+      "hasArea": {
+        "macro-p": 0.35,
+        "macro-r": 0.34,
+        "macro-f1": 0.34,
+        "micro-p": 0.3434343434343434,
+        "micro-r": 0.34,
+        "micro-f1": 0.3417085427135678
+      },
+      "hasCapacity": {
+        "macro-p": 0.18556701030927836,
+        "macro-r": 0.1134020618556701,
+        "macro-f1": 0.1134020618556701,
+        "micro-p": 0.12222222222222222,
+        "micro-r": 0.1134020618556701,
+        "micro-f1": 0.11764705882352941
+      },
+      "personHasCityOfDeath": {
+        "macro-p": 0.29,
+        "macro-r": 0.66,
+        "macro-f1": 0.28,
+        "micro-p": 0.2755102040816326,
+        "micro-r": 0.4426229508196721,
+        "micro-f1": 0.3396226415094339
+      }
+    },
+    "metadata": {
+      "upstream": {
+        "repository": "https://github.com/lm-kbc/dataset2026",
+        "commit": "e079024b809568f28cded5537203dfd52f5b04ae",
+        "license": "Apache-2.0",
+        "files": {
+          "evaluate.py": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "git_blob_sha": "565ead0713aed41315ddca40d3c1f0bb37d9724c",
+            "sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22"
+          },
+          "LICENSE": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        },
+        "modifications": "None; upstream files preserved byte-for-byte."
+      },
+      "tolerance": 0.05,
+      "python_version": "3.11.9",
+      "pandas_version": "2.2.3",
+      "gold": {
+        "path": "/home/m/mbatsir/LLM-KBC-Thesis/data/lm_kbc_2026/val.jsonl",
+        "sha256": "ba86b53ac38eb4b23b80391b291e5987ff4bbfe79827596fc09751b1bb0ce2be",
+        "input_records": 475
+      },
+      "predictions": {
+        "path": "/home/m/mbatsir/LLM-KBC-Thesis/results/model_benchmark/Qwen_Qwen3_5-9B-b0b23d96e1c625da/3-shot/qwen35-bf16-3shot-full-001/predictions.jsonl",
+        "sha256": "cde141ce6350b9342313e93e0ddebfadd7e2f10ceca8efc9f04fcbaff8c21a8e",
+        "input_records": 475
+      },
+      "evaluated_pairs": 475
+    }
+  },
+  "model_id": "Qwen/Qwen3.5-9B",
+  "resolved_revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+  "shots": 3,
+  "prompt_version": "lm-kbc-2026-few-shot-v1",
+  "total_inputs": 475,
+  "processed_records": 475,
+  "valid_records": 464,
+  "parse_failures": 11,
+  "numeric_normalized_responses": 0,
+  "format_validity_rate": 0.9768421052631578,
+  "inference_runtime_seconds": 893.2208539675921,
+  "model_load_seconds": 4.582057788036764,
+  "loading_class": "Qwen3_5ForConditionalGeneration",
+  "quantization": null,
+  "dtype": "bfloat16",
+  "gpu_memory": {
+    "peak_allocated_bytes": 19043467264,
+    "peak_reserved_bytes": 19146997760
+  }
+}

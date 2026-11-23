@@ -1,11 +1,11 @@
 #!/bin/bash
 # Run on the login node from the repository root; never downloads or runs inference.
-# Usage: bash scripts/slurm/submit_benchmark.sh ministral|granite smoke|full [tag]
+# Usage: bash scripts/slurm/submit_benchmark.sh ministral|granite|gemma smoke|full [tag]
 # BENCH_SHOTS: unset/all selects 0,3,5%1; 0, 3 or 5 selects only that task.
 set -Eeuo pipefail
 trap 'rc=$?; printf "ERROR file=%s line=%s exit=%s command=%q\n" "${BASH_SOURCE[0]}" "$LINENO" "$rc" "$BASH_COMMAND" >&2; exit "$rc"' ERR
-[[ $# -ge 2 && $# -le 3 ]] || { echo "Expected model, smoke|full, optional run tag" >&2; exit 2; }
-[[ "$1" = ministral || "$1" = granite ]] || { echo "Unknown model" >&2; exit 2; }
+[[ $# -ge 2 && $# -le 3 ]] || { echo "Expected ministral|granite|gemma, smoke|full, optional run tag" >&2; exit 2; }
+[[ "$1" = ministral || "$1" = granite || "$1" = gemma ]] || { echo "Unknown model; choose ministral, granite or gemma" >&2; exit 2; }
 [[ "$2" = smoke || "$2" = full ]] || { echo "Choose smoke or full" >&2; exit 2; }
 case "${BENCH_SHOTS-all}" in
   all) shot_array='0,3,5%1' ;;

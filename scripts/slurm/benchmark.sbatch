@@ -13,12 +13,12 @@
 
 # Submit through submit_benchmark.sh so Slurm opens logs outside /home.
 # --output/--error are submission options: shell variables in #SBATCH do not expand.
-# One parameterized template covers both models and smoke/full configurations.
+# One parameterized template covers all three models and smoke/full configurations.
 set -Eeuo pipefail
 trap 'rc=$?; printf "ERROR file=%s line=%s exit=%s command=%q\n" "${BASH_SOURCE[0]}" "$LINENO" "$rc" "$BASH_COMMAND" >&2; exit "$rc"' ERR
 trap 'rc=$?; printf "EXIT job=%s task=%s host=%s cwd=%q exit=%s\n" "${SLURM_JOB_ID:-unknown}" "${SLURM_ARRAY_TASK_ID:-unknown}" "${HOSTNAME:-unknown}" "$PWD" "$rc" >&2' EXIT
 printf 'START job=%s task=%s host=%s submit_dir=%q\n' "${SLURM_JOB_ID:-unknown}" "${SLURM_ARRAY_TASK_ID:-unknown}" "${HOSTNAME:-unknown}" "${SLURM_SUBMIT_DIR:-unset}"
-[[ $# -ge 2 && $# -le 3 ]] || { echo "Usage: sbatch $0 ministral|granite smoke|full [run-tag]" >&2; exit 2; }
+[[ $# -ge 2 && $# -le 3 ]] || { echo "Usage: sbatch $0 ministral|granite|gemma smoke|full [run-tag]" >&2; exit 2; }
 : "${BENCH_SCRATCH_ROOT:?Set BENCH_SCRATCH_ROOT to an existing writable scratch directory}"
 : "${BENCH_PYTHON:?Set BENCH_PYTHON to the isolated benchmark-modern Python executable}"
 [[ "$BENCH_PYTHON" = /* && -x "$BENCH_PYTHON" ]] || { echo "BENCH_PYTHON must be an absolute executable path" >&2; exit 2; }
@@ -93,7 +93,13 @@ case "$1" in
     quantization='none'
     precision='bf16'
     ;;
-  *) echo "Unknown model selection" >&2; exit 2 ;;
+  gemma)
+    model='google/gemma-4-31B-it'
+    revision='842da3794eaa0b77d5f08bae87a17459d91ff475'
+    quantization='nf4'
+    precision='bf16-nf4'
+    ;;
+  *) echo "Unknown model selection; choose ministral, granite or gemma" >&2; exit 2 ;;
 esac
 extra=()
 case "$2" in

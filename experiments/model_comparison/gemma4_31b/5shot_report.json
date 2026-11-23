@@ -1,0 +1,133 @@
+{
+  "evaluation": {
+    "benchmark": "lm-kbc-2026",
+    "split": "val",
+    "overall": {
+      "macro-p": 0.6476622807017545,
+      "macro-r": 0.5317475948562758,
+      "macro-f1": 0.4985320379908724,
+      "micro-p": 0.5,
+      "micro-r": 0.1598173515981735,
+      "micro-f1": 0.24221453287197228
+    },
+    "per_relation": {
+      "awardWonBy": {
+        "macro-p": 0.5889583333333334,
+        "macro-r": 0.020867898530243074,
+        "macro-f1": 0.03307122736586196,
+        "micro-p": 0.17582417582417584,
+        "micro-r": 0.02194787379972565,
+        "micro-f1": 0.03902439024390243
+      },
+      "companyTradesAtStockExchange": {
+        "macro-p": 0.9,
+        "macro-r": 0.8125,
+        "macro-f1": 0.7669047619047621,
+        "micro-p": 0.8253968253968254,
+        "micro-r": 0.6842105263157895,
+        "micro-f1": 0.7482014388489208
+      },
+      "countryLandBordersCountry": {
+        "macro-p": 0.9963235294117647,
+        "macro-r": 0.9723739495798318,
+        "macro-f1": 0.9820813173754348,
+        "micro-p": 0.9939759036144579,
+        "micro-r": 0.9217877094972067,
+        "micro-f1": 0.9565217391304348
+      },
+      "hasArea": {
+        "macro-p": 0.35,
+        "macro-r": 0.33,
+        "macro-f1": 0.33,
+        "micro-p": 0.336734693877551,
+        "micro-r": 0.33,
+        "micro-f1": 0.3333333333333333
+      },
+      "hasCapacity": {
+        "macro-p": 0.3711340206185567,
+        "macro-r": 0.13402061855670103,
+        "macro-f1": 0.13402061855670103,
+        "micro-p": 0.17567567567567569,
+        "micro-r": 0.13402061855670103,
+        "micro-f1": 0.15204678362573099
+      },
+      "personHasCityOfDeath": {
+        "macro-p": 0.73,
+        "macro-r": 0.59,
+        "macro-f1": 0.47,
+        "micro-p": 0.425531914893617,
+        "micro-r": 0.32786885245901637,
+        "micro-f1": 0.37037037037037035
+      }
+    },
+    "metadata": {
+      "upstream": {
+        "repository": "https://github.com/lm-kbc/dataset2026",
+        "commit": "e079024b809568f28cded5537203dfd52f5b04ae",
+        "license": "Apache-2.0",
+        "files": {
+          "evaluate.py": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "git_blob_sha": "565ead0713aed41315ddca40d3c1f0bb37d9724c",
+            "sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22"
+          },
+          "LICENSE": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        },
+        "modifications": "None; upstream files preserved byte-for-byte."
+      },
+      "tolerance": 0.05,
+      "python_version": "3.11.9",
+      "pandas_version": "2.2.3",
+      "gold": {
+        "path": "/home/m/mbatsir/LLM-KBC-Thesis/data/lm_kbc_2026/val.jsonl",
+        "sha256": "ba86b53ac38eb4b23b80391b291e5987ff4bbfe79827596fc09751b1bb0ce2be",
+        "input_records": 475
+      },
+      "predictions": {
+        "path": "/scratch/m/mbatsir/llm-kbc/benchmark-results/google_gemma-4-31B-it-8ee0b411eb0b5afd/5-shot/bf16-nf4-full-v1/predictions.jsonl",
+        "sha256": "4e6057cec5d9727430650f57842513198d778d77c8d8b97ccb929e5613060986",
+        "input_records": 475
+      },
+      "evaluated_pairs": 475
+    }
+  },
+  "model_id": "google/gemma-4-31B-it",
+  "resolved_revision": "842da3794eaa0b77d5f08bae87a17459d91ff475",
+  "shots": 5,
+  "prompt_version": "lm-kbc-2026-few-shot-v2",
+  "total_inputs": 475,
+  "processed_records": 475,
+  "valid_records": 473,
+  "parse_failures": 2,
+  "numeric_normalized_responses": 0,
+  "format_validity_rate": 0.9957894736842106,
+  "inference_runtime_seconds": 905.2811286128126,
+  "model_load_seconds": 14.894240614958107,
+  "loading_class": "Gemma4ForConditionalGeneration",
+  "quantization": {
+    "quant_method": "bitsandbytes",
+    "_load_in_8bit": false,
+    "_load_in_4bit": true,
+    "llm_int8_threshold": 6.0,
+    "llm_int8_skip_modules": null,
+    "llm_int8_enable_fp32_cpu_offload": false,
+    "llm_int8_has_fp16_weight": false,
+    "bnb_4bit_quant_type": "nf4",
+    "bnb_4bit_use_double_quant": true,
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "bnb_4bit_quant_storage": "uint8",
+    "load_in_4bit": true,
+    "load_in_8bit": false
+  },
+  "dtype": "bfloat16",
+  "gpu_memory": {
+    "peak_allocated_bytes": 19666378240,
+    "peak_reserved_bytes": 20149436416
+  }
+}

@@ -1,0 +1,132 @@
+{
+  "evaluation": {
+    "benchmark": "lm-kbc-2026",
+    "split": "val",
+    "overall": {
+      "macro-p": 0.58336886613998,
+      "macro-r": 0.5819227300225485,
+      "macro-f1": 0.48395431803738564,
+      "micro-p": 0.5133858267716536,
+      "micro-r": 0.16539827498731607,
+      "micro-f1": 0.25019186492709133
+    },
+    "per_relation": {
+      "awardWonBy": {
+        "macro-p": 0.7300211416490485,
+        "macro-r": 0.044663009404388714,
+        "macro-f1": 0.034467913413625456,
+        "micro-p": 0.10084033613445378,
+        "micro-r": 0.00823045267489712,
+        "micro-f1": 0.015218769816106531
+      },
+      "companyTradesAtStockExchange": {
+        "macro-p": 0.74,
+        "macro-r": 0.8225,
+        "macro-f1": 0.6752380952380952,
+        "micro-p": 0.6506024096385542,
+        "micro-r": 0.7105263157894737,
+        "micro-f1": 0.679245283018868
+      },
+      "countryLandBordersCountry": {
+        "macro-p": 0.9823529411764705,
+        "macro-r": 0.966421568627451,
+        "macro-f1": 0.9707325354384176,
+        "micro-p": 0.9715909090909091,
+        "micro-r": 0.9553072625698324,
+        "micro-f1": 0.9633802816901408
+      },
+      "hasArea": {
+        "macro-p": 0.58,
+        "macro-r": 0.57,
+        "macro-f1": 0.57,
+        "micro-p": 0.5757575757575758,
+        "micro-r": 0.57,
+        "micro-f1": 0.5728643216080402
+      },
+      "hasCapacity": {
+        "macro-p": 0.3711340206185567,
+        "macro-r": 0.1134020618556701,
+        "macro-f1": 0.1134020618556701,
+        "micro-p": 0.1527777777777778,
+        "micro-r": 0.1134020618556701,
+        "micro-f1": 0.1301775147928994
+      },
+      "personHasCityOfDeath": {
+        "macro-p": 0.35,
+        "macro-r": 0.6,
+        "macro-f1": 0.28,
+        "micro-p": 0.2441860465116279,
+        "micro-r": 0.3442622950819672,
+        "micro-f1": 0.2857142857142857
+      }
+    },
+    "metadata": {
+      "upstream": {
+        "repository": "https://github.com/lm-kbc/dataset2026",
+        "commit": "e079024b809568f28cded5537203dfd52f5b04ae",
+        "license": "Apache-2.0",
+        "files": {
+          "evaluate.py": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "git_blob_sha": "565ead0713aed41315ddca40d3c1f0bb37d9724c",
+            "sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22"
+          },
+          "LICENSE": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        },
+        "modifications": "None; upstream files preserved byte-for-byte."
+      },
+      "tolerance": 0.05,
+      "python_version": "3.11.9",
+      "pandas_version": "2.2.3",
+      "gold": {
+        "path": "/home/m/mbatsir/LLM-KBC-Thesis/data/lm_kbc_2026/val.jsonl",
+        "sha256": "ba86b53ac38eb4b23b80391b291e5987ff4bbfe79827596fc09751b1bb0ce2be",
+        "input_records": 475
+      },
+      "predictions": {
+        "path": "/scratch/m/mbatsir/llm-kbc/benchmark-results/mistralai_Ministral-3-14B-Instruct-2512-e8fbbd3c728b732e/3-shot/bf16-from-fp8-full-v1/predictions.jsonl",
+        "sha256": "2c33bd7c6f8f1b78b44c79948bbd2807b44d91b63e83d38f8092c50f5a2378c2",
+        "input_records": 475
+      },
+      "evaluated_pairs": 475
+    }
+  },
+  "model_id": "mistralai/Ministral-3-14B-Instruct-2512",
+  "resolved_revision": "29439f81c2be264d8d393273f99e7db9c0961120",
+  "shots": 3,
+  "prompt_version": "lm-kbc-2026-few-shot-v1",
+  "total_inputs": 475,
+  "processed_records": 475,
+  "valid_records": 467,
+  "parse_failures": 8,
+  "numeric_normalized_responses": 0,
+  "format_validity_rate": 0.9831578947368421,
+  "inference_runtime_seconds": 595.0482683512382,
+  "model_load_seconds": 3.779101640917361,
+  "loading_class": "Mistral3ForConditionalGeneration",
+  "quantization": {
+    "quant_method": "fp8",
+    "modules_to_not_convert": [
+      "model.vision_tower",
+      "model.multi_modal_projector",
+      "lm_head",
+      "model.vision_tower",
+      "model.multi_modal_projector",
+      "lm_head"
+    ],
+    "activation_scheme": "static",
+    "weight_block_size": null,
+    "dequantize": true
+  },
+  "dtype": "bfloat16",
+  "gpu_memory": {
+    "peak_allocated_bytes": 28157399552,
+    "peak_reserved_bytes": 28991029248
+  }
+}

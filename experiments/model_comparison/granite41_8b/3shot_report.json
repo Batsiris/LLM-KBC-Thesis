@@ -1,0 +1,119 @@
+{
+  "evaluation": {
+    "benchmark": "lm-kbc-2026",
+    "split": "val",
+    "overall": {
+      "macro-p": 0.5833728067204521,
+      "macro-r": 0.46298107657393806,
+      "macro-f1": 0.4038581035320291,
+      "micro-p": 0.47451669595782076,
+      "micro-r": 0.136986301369863,
+      "micro-f1": 0.21259842519685038
+    },
+    "per_relation": {
+      "awardWonBy": {
+        "macro-p": 0.6789384779516359,
+        "macro-r": 0.03779161345253299,
+        "macro-f1": 0.05088781275221953,
+        "micro-p": 0.25,
+        "micro-r": 0.01783264746227709,
+        "micro-f1": 0.03329065300896287
+      },
+      "companyTradesAtStockExchange": {
+        "macro-p": 0.69,
+        "macro-r": 0.725,
+        "macro-f1": 0.5566666666666666,
+        "micro-p": 0.5316455696202531,
+        "micro-r": 0.5526315789473685,
+        "micro-f1": 0.5419354838709678
+      },
+      "countryLandBordersCountry": {
+        "macro-p": 0.9310690943043883,
+        "macro-r": 0.9123249299719887,
+        "macro-f1": 0.8920155056400727,
+        "micro-p": 0.861878453038674,
+        "micro-r": 0.8715083798882681,
+        "micro-f1": 0.8666666666666666
+      },
+      "hasArea": {
+        "macro-p": 0.35,
+        "macro-r": 0.33,
+        "macro-f1": 0.33,
+        "micro-p": 0.336734693877551,
+        "micro-r": 0.33,
+        "micro-f1": 0.3333333333333333
+      },
+      "hasCapacity": {
+        "macro-p": 0.28865979381443296,
+        "macro-r": 0.05154639175257732,
+        "macro-f1": 0.05154639175257732,
+        "micro-p": 0.06756756756756757,
+        "micro-r": 0.05154639175257732,
+        "micro-f1": 0.05847953216374269
+      },
+      "personHasCityOfDeath": {
+        "macro-p": 0.75,
+        "macro-r": 0.47,
+        "macro-f1": 0.37,
+        "micro-p": 0.24242424242424243,
+        "micro-r": 0.13114754098360656,
+        "micro-f1": 0.17021276595744678
+      }
+    },
+    "metadata": {
+      "upstream": {
+        "repository": "https://github.com/lm-kbc/dataset2026",
+        "commit": "e079024b809568f28cded5537203dfd52f5b04ae",
+        "license": "Apache-2.0",
+        "files": {
+          "evaluate.py": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/evaluate.py",
+            "git_blob_sha": "565ead0713aed41315ddca40d3c1f0bb37d9724c",
+            "sha256": "2d592ae177c7b230922bb959da7a8ee1c4c662bf72a99d4dbd0cf62170ff9e22"
+          },
+          "LICENSE": {
+            "source_url": "https://github.com/lm-kbc/dataset2026/blob/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "raw_url": "https://raw.githubusercontent.com/lm-kbc/dataset2026/e079024b809568f28cded5537203dfd52f5b04ae/LICENSE",
+            "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        },
+        "modifications": "None; upstream files preserved byte-for-byte."
+      },
+      "tolerance": 0.05,
+      "python_version": "3.11.9",
+      "pandas_version": "2.2.3",
+      "gold": {
+        "path": "/home/m/mbatsir/LLM-KBC-Thesis/data/lm_kbc_2026/val.jsonl",
+        "sha256": "ba86b53ac38eb4b23b80391b291e5987ff4bbfe79827596fc09751b1bb0ce2be",
+        "input_records": 475
+      },
+      "predictions": {
+        "path": "/scratch/m/mbatsir/llm-kbc/benchmark-results/ibm-granite_granite-4_1-8b-9e17408bbf796564/3-shot/bf16-full-v1/predictions.jsonl",
+        "sha256": "782068f52840c80a0cf164be052bbf5285a22a2ff8099ed3c0c83d5af9c6f96e",
+        "input_records": 475
+      },
+      "evaluated_pairs": 475
+    }
+  },
+  "model_id": "ibm-granite/granite-4.1-8b",
+  "resolved_revision": "1504002f650e656a0a3789d99574df12e3e94ed0",
+  "shots": 3,
+  "prompt_version": "lm-kbc-2026-few-shot-v1",
+  "total_inputs": 475,
+  "processed_records": 475,
+  "valid_records": 469,
+  "parse_failures": 6,
+  "numeric_normalized_responses": 0,
+  "format_validity_rate": 0.9873684210526316,
+  "inference_runtime_seconds": 466.923209594097,
+  "model_load_seconds": 4.795357377268374,
+  "loading_class": "GraniteForCausalLM",
+  "quantization": null,
+  "dtype": "bfloat16",
+  "gpu_memory": {
+    "peak_allocated_bytes": 17043932160,
+    "peak_reserved_bytes": 17280532480
+  }
+}

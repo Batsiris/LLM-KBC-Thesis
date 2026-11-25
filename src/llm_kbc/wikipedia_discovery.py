@@ -121,7 +121,7 @@ def _candidate(page, method, rank, timestamp, metadata_timestamp):
             "entity_identity_verified": False, "historical_mapping_verified": False}
 
 
-def _discover_record(record, cache_dir, **options):
+def _discover_record(record, cache_dir, *, candidate_limit=CANDIDATE_LIMIT, search_limit=SEARCH_LIMIT, **options):
     diagnostics = record["diagnostics"]
     subject = record["SubjectEntity"]
     selected = record["candidates"]
@@ -151,9 +151,9 @@ def _discover_record(record, cache_dir, **options):
                     raise DiscoveryError("Direct lookup returned an unexplained title substitution")
                 selected.append(_candidate(page, "direct_title", None, stamp, stamp))
     search, stamp = _request(record, "search", _params(list="search", srsearch=record["query"],
-        srnamespace="0", srlimit=str(SEARCH_LIMIT), srprop="", srinfo=""), cache_dir, **options)
+        srnamespace="0", srlimit=str(search_limit), srprop="", srinfo=""), cache_dir, **options)
     matches = search.get("search")
-    if not isinstance(matches, list) or len(matches) > SEARCH_LIMIT:
+    if not isinstance(matches, list) or len(matches) > search_limit:
         raise DiscoveryError("Malformed or excessive search results")
     ranked, seen = [], set()
     for rank, match in enumerate(matches, 1):
@@ -196,7 +196,7 @@ def _discover_record(record, cache_dir, **options):
                                     "page_id": page["pageid"], "search_title": match["title"], "metadata_title": page["title"]})
             if page["pageid"] in {candidate["page_id"] for candidate in selected}:
                 diagnostics.append({"stage": "selection", "reason": "duplicate_page_id", "page_id": page["pageid"], "search_rank": rank})
-            elif len(selected) < CANDIDATE_LIMIT:
+            elif len(selected) < candidate_limit:
                 selected.append(_candidate(page, "search", rank, stamp, metadata_stamp))
     record["status"] = "candidates_unverified" if selected else "unresolved"
 
@@ -325,6 +325,9 @@ def load_discovery(output_path, *, cache_dir):
     data = corpus._input_bytes(output)
     article_data = corpus._input_bytes(Path(str(output) + ".articles.jsonl"))
     manifest = acquisition._json_object(corpus._input_bytes(Path(str(output) + ".manifest.json")), "Discovery manifest")
+    if manifest.get("schema_version") == "wikipedia-article-discovery-v2":
+        from .wikipedia_discovery_v2 import load_discovery as load_v2
+        return load_v2(output, cache_dir=cache_dir)
     if (manifest.get("schema_version") != POLICY_VERSION or manifest.get("status") != "complete"
             or manifest.get("output_sha256") != corpus._sha256(data)
             or manifest.get("articles_sha256") != corpus._sha256(article_data)
@@ -359,14 +362,23 @@ def load_discovery(output_path, *, cache_dir):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     inputs = parser.add_mutually_exclusive_group(required=True)
-    inputs.add_argument("--identities", type=Path, help="SubjectEntity/Relation JSONL; other fields ignored")
+    inputs.add_argument("--identities", type=Path, help="JSONL identities: v1 SubjectEntity/Relation; v2 uses --input-format")
     inputs.add_argument("--prepare-pilot", type=Path, metavar="TRAIN_JSONL", help="Freeze 18 identities from the SHA256-pinned training split; no network")
     parser.add_argument("--output", required=True, type=Path, help="New discovery JSONL, outside benchmark/results paths")
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--allow-network", action="store_true", help="Explicitly permit live metadata cache misses")
     parser.add_argument("--user-agent", help="Project/version (real contact URL/email/wiki user)")
     parser.add_argument("--request-delay", type=float, default=1.0)
+    parser.add_argument("--policy-version", choices=("v1", "v2"), default="v1", help="Default v1; opt into generic v2")
+    parser.add_argument("--input-format", choices=("generic", "lm-kbc-2026"), help="V2 only; default generic")
+    parser.add_argument("--candidate-limit", type=int, help="V2 only; default 5")
+    parser.add_argument("--search-limit", type=int, help="V2 only; default 10")
+    parser.add_argument("--cutoff", help="V2 only; canonical whole-second UTC; default 2026-07-01T00:00:00Z")
     args = parser.parse_args(argv)
+    if (args.prepare_pilot is not None or args.policy_version == "v1") and (
+            args.input_format is not None or args.candidate_limit is not None or args.search_limit is not None
+            or args.cutoff is not None or (args.prepare_pilot is not None and args.policy_version != "v1")):
+        parser.error("Generic inputs/configuration require discovery --policy-version v2; pilot preparation remains v1")
     if args.prepare_pilot is not None and (args.cache_dir is not None or args.allow_network or args.user_agent):
         parser.error("Pilot preparation does not accept cache or live-network options")
     if args.prepare_pilot is None and args.cache_dir is None:
@@ -377,8 +389,17 @@ def main(argv=None):
             print(f"Pilot records: {result['record_count']}; training SHA256: {result['train_sha256']}; "
                   f"identity SHA256: {result['input_identities_sha256']}")
             return 0
-        result = discover(identities_path=args.identities, output_path=args.output, cache_dir=args.cache_dir,
-                          allow_network=args.allow_network, user_agent=args.user_agent, request_delay=args.request_delay)
+        options = {"allow_network": args.allow_network, "user_agent": args.user_agent, "request_delay": args.request_delay}
+        if args.policy_version == "v2":
+            from . import wikipedia_discovery_v2 as v2
+            config = v2.DiscoveryConfig(
+                candidate_limit=5 if args.candidate_limit is None else args.candidate_limit,
+                search_limit=10 if args.search_limit is None else args.search_limit,
+                historical_cutoff=HISTORICAL_CUTOFF if args.cutoff is None else args.cutoff)
+            result = v2.discover(identities_path=args.identities, output_path=args.output, cache_dir=args.cache_dir,
+                                 input_format=args.input_format or "generic", configuration=config, **options)
+        else:
+            result = discover(identities_path=args.identities, output_path=args.output, cache_dir=args.cache_dir, **options)
     except (ValueError, OSError) as error:
         parser.exit(2, f"Wikipedia discovery failed: {error}\n")
     except KeyboardInterrupt:

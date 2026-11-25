@@ -823,8 +823,35 @@ and RAG inference are separate future tasks; existing baselines are unchanged.
 Wikipedia article candidates can be prepared separately with
 `python -m llm_kbc.wikipedia_discovery --help`. See
 [article discovery](docs/wikipedia_discovery.md) for the versioned direct/search
-policy, metadata-only cache replay, historical limitations, and proposed
-18-training-instance pilot. No live discovery pilot has been executed.
+policy, metadata-only cache replay and historical limitations. The researcher
+reports the completed v1 18-training-identity discovery pilot and offline replay;
+its archived artifacts remain unchanged.
+
+Dataset-agnostic discovery is opt-in with `--policy-version v2`. Generic JSONL
+accepts `subject`, `relation_id`, optional `relation_namespace` and
+`relation_description`; `--input-format lm-kbc-2026` explicitly projects the
+legacy identity fields into the benchmark namespace. V2 defaults to five eligible
+unique articles from ten search results, with configurable integer limits
+`1 <= candidate_limit <= search_limit <= 10`. The CLI still defaults to v1's
+three-candidate policy. For example, using a **previously populated** metadata
+cache and a new output path:
+
+```sh
+python -m llm_kbc.wikipedia_discovery \
+  --policy-version v2 --input-format lm-kbc-2026 \
+  --identities /path/to/pilot/identities.jsonl \
+  --output /path/to/new/discovery_5.jsonl --cache-dir /path/to/pilot/cache \
+  --candidate-limit 5 --search-limit 10
+```
+
+This is offline by default. Selection-limit changes reuse complete cached API
+responses; query/search-parameter changes can cause controlled cache misses.
+V2 records full query provenance and rejects unsupported control/format characters
+without altering text; MediaWiki search expressions are submitted verbatim, not
+made literal by URL encoding. See the discovery documentation for generic
+examples, backend/duplicate rules, artifact-version validation and exact proposed
+Aristotle expansion commands. These are article candidates, not final evidence
+contexts; no RAG inference or new live pilot is implemented by this stage.
 
 ## Current status
 

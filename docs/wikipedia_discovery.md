@@ -1,4 +1,4 @@
-# RAG-03.1: Wikipedia article discovery
+# Wikipedia article discovery: v1 and dataset-agnostic v2
 
 `llm_kbc.wikipedia_discovery` discovers **article candidates**, not object answers,
 factual evidence or verified entity links. It is an independent retrieval-assisted
@@ -6,7 +6,208 @@ research condition, not an official closed-book submission. No model, embeddings
 article text, benchmark answers, evaluation results or snippets enter selection.
 The collector, preprocessor, BM25, baselines and evaluator remain unchanged.
 
-## Fixed policy and temporal scope
+## RAG-04.3: opt-in generic discovery v2
+
+The CLI still defaults to **v1**, with its original strict LM-KBC input schema,
+three-candidate limit and artifact format. Select `--policy-version v2` explicitly
+for `wikipedia-article-discovery-v2`. The new module
+`llm_kbc.wikipedia_discovery_v2` shares the existing transport, cache, page
+validation, eligibility and selection engine; it does not assemble a corpus or
+perform retrieval. Arbitrary input support is not evidence of end-to-end
+generalization to other datasets.
+
+### Input interface and query policy
+
+V2 defaults to `--input-format generic`, one JSON object per line:
+
+```json
+{"subject":"Example University","relation_id":"locatedIn","relation_description":"city location","relation_namespace":"synthetic-kbc"}
+```
+
+`subject` and `relation_id` are required nonblank UTF-8 strings. Optional
+`relation_namespace` and `relation_description` are nonblank strings or null.
+`project_input()` explicitly reads only these four keys. Other values, including
+gold fields, are ignored without inspection, copying or hashing. The JSONL itself
+must still be syntactically valid; duplicate JSON keys, nonfinite constants,
+non-object rows, empty inputs and invalid Unicode fail. Prefer identity-only
+inputs. This explicit projection differs from the standalone query validator,
+which rejects unknown fields.
+
+`--input-format lm-kbc-2026` reads only `SubjectEntity` and `Relation`, retains the
+existing strict six-relation validation, and assigns namespace `lm-kbc-2026`.
+It never imports gold answers or optional descriptions from those records.
+Benchmark-specific `--prepare-pilot` remains separate and v1-only.
+
+The unchanged [`rag-query-v1` policy](rag_query.md) applies the six exact lexical
+templates only in the exact `lm-kbc-2026` namespace, then an explicit description,
+then the literal relation ID. Generic relations have no whitelist. The example
+above produces `Example University city location`. A relation without a
+description produces, for example, `Example University P999999`; its provenance
+marks `literal_relation_fallback` and `limited_fallback=true`, not semantic
+resolution. Caller-supplied descriptions must be independent of gold answers.
+
+Original spelling, Unicode and whitespace are preserved. Exact identity hashes
+include subject, relation ID and namespace; task hashes include relation ID,
+namespace and description. Query hashes include the complete query provenance,
+including descriptions even when a legacy template takes precedence. Batch
+duplicate detection is separate: subject NFKC + casefold + collapsed whitespace,
+**exact** namespace and relation ID. Exact or normalized duplicates fail; different
+descriptions for the same normalized identity fail as conflicting definitions.
+Different namespaces are distinct identities even if they share raw requests.
+No duplicates or conflicts are silently dropped.
+
+### Configuration and backend policies
+
+| Setting | V2 default | Supported values |
+|---|---|---|
+| `--candidate-limit` | 5 | Integer 1 through `search_limit` |
+| `--search-limit` | 10 | Integer `candidate_limit` through 10 |
+| `--cutoff` | `2026-07-01T00:00:00Z` | Canonical whole-second UTC timestamp ending in `Z` |
+
+Boolean/float limits are rejected by the Python API. These conservative bounds
+retain one search and at most one ten-page metadata batch, without continuation,
+and match the completed v1 pilot's search depth. Five is **up to five eligible
+unique articles per query**, not five passages or a quality guarantee. An eligible
+direct candidate comes first, followed by original search ranks with page-ID
+deduplication. All returned metadata is validated, even beyond the selection cap.
+`candidate_shortfall` diagnostics record requested and selected counts, including
+zero; `unresolved` means no candidates, while partial selections remain explicit.
+Global article inventory is deduplicated by first encounter across input order;
+each query retains all its own candidate associations.
+
+`wikipedia-unicode-controls-and-format-v1` rejects Unicode categories Cc, Zl, Zp
+and Cf, except meaningful joiners U+200C/U+200D, in **all four** input strings.
+Inputs containing only whitespace, joiners or combining marks are rejected.
+Ordinary Unicode letters, combining marks, emoji sequences and spacing characters
+are retained. Nothing is silently stripped, normalized or escaped. This stricter
+backend policy is v2-only; it can reject control-bearing inputs accepted by v1.
+Title-ineligible subjects (for example `|`, `#` or outer whitespace) skip direct
+lookup with `invalid_direct_title`; the unchanged query is still searched.
+Other invalid API titles remain explicitly missing/invalid outcomes.
+
+`mediawiki-verbatim-search-v1` **permits MediaWiki search syntax**. The constructed
+query is submitted verbatim as `srsearch` and separately recorded as
+`search_expression`. Quotes, colons and operators can affect interpretation;
+HTTP URL encoding does not make them literal. This choice preserves the actual
+v1 request parameters for the pilot. No claim of literal name matching or safe
+semantic entity resolution is made. A future literal-expression policy would
+require a new version and potentially new cache requests.
+
+### Artifacts, integrity and replay
+
+Use fresh output paths for v2. Suffixes remain:
+
+- `<output>`: ordered JSONL, one record per query, 1-based `input_index`, all four
+  projected input fields, full `query_provenance`, `search_expression`, status,
+  candidates, diagnostics and original API/cache references.
+- `<output>.articles.jsonl`: unique `{"page_id":123}` requests, directly compatible
+  with the unchanged historical collector. An empty inventory is valid discovery
+  but cannot be supplied to the collector's nonempty-input interface.
+- `<output>.manifest.json`: completion marker, published last. Contains schema and
+  discovery/query/backend/search policy versions, Unicode database version,
+  configuration, input format, ordered inputs with exact identity/task/query
+  hashes, `input_queries_sha256`, counts including unresolved and shortfall counts,
+  unique request count, output/inventory hashes, request policy and implementation
+  hashes for discovery v1/v2, query, collector, corpus and BM25 utilities.
+- `<output>.failure.json`: incomplete/interrupted run diagnostics when processing
+  or publication fails. Preflight failures need not create a failure report.
+
+All hashes are SHA256. Serialization uses the existing canonical UTF-8, sorted
+compact JSON, `ensure_ascii=False`, finite values and LF termination. The input
+fingerprint hashes the canonical ordered projected identities/task/query hashes,
+not the original file bytes, paths or gold fields. API references retain request
+parameters, response/envelope hashes and cached acquisition timestamps. No new
+wall-clock timestamp is added on offline replay.
+
+`wikipedia_discovery.load_discovery(output, cache_dir=...)` dispatches v1/v2. V2
+requires all three completed artifacts, validates configuration and fingerprints,
+rebuilds queries and selections from the immutable cache, and compares canonical
+records, inventory and manifest bytes. Unknown fields/policies, bad coverage,
+configuration changes and rehashed selection/provenance tampering fail closed.
+Keep the cache: a manifest alone does not make discovery independently replayable.
+Implementation hashes are retained as archived provenance (validated shape, not
+required to equal the current code). These are integrity checks, not signatures:
+pin trusted external hashes to detect wholesale replacement of a self-consistent
+archive. Unicode-version differences require the recorded environment for replay.
+
+Publication reuses the existing fsynced temporary files and exclusive hard links;
+no existing output, sidecar, failure report or cache entry is overwritten. A crash
+can leave orphaned data files, never a valid completion marker for an incomplete
+set. Consumers must call the validating reader, not trust file existence. A fresh
+output prefix is required after failure. Hard-link support on the output filesystem
+is required; this is not a multi-file transaction or a promise of power-loss
+durability on every HPC filesystem.
+
+Cache keys remain hashes of the actual endpoint and request parameters. Changing
+**only candidate_limit** reuses the same direct/search/metadata responses; under
+otherwise identical policies/inputs, the three selections are an ordered prefix
+of five. Different task provenance can share identical requests without sharing
+identity hashes. Changing search depth or expression requires matching cache
+entries; absent entries cause a controlled offline miss, never a hidden request.
+Transport remains serial, delayed on live misses, timeout 30 seconds, maxlag 5,
+no automatic retries and informative User-Agent required for explicit live mode.
+The failure-recovery rules in the v1 section below apply to both versions.
+
+### Proposed Aristotle offline expansion (do not execute automatically)
+
+The researcher reports a completed v1 pilot of 18 training identities, 48 unique
+articles, one unresolved input, and byte-identical offline replay. Its HPC cache
+is not present here; actual archive paths and cache completeness must be checked
+on Aristotle. Set `PILOT_DIR` to that archive's directory containing
+`identities.jsonl` and `cache/`, and `EXPANSION_DIR` to a **new scratch directory**:
+
+```sh
+cd ~/LLM-KBC-Thesis
+: "${PILOT_DIR:?Set the existing v1 pilot archive directory}"
+: "${EXPANSION_DIR:?Set a new scratch output directory}"
+mkdir -- "$EXPANSION_DIR"
+python -m llm_kbc.wikipedia_discovery \
+  --policy-version v2 --input-format lm-kbc-2026 \
+  --identities "$PILOT_DIR/identities.jsonl" \
+  --output "$EXPANSION_DIR/discovery_5.jsonl" \
+  --cache-dir "$PILOT_DIR/cache" \
+  --candidate-limit 5 --search-limit 10 --cutoff 2026-07-01T00:00:00Z
+```
+
+No `--allow-network` is supplied. At most 90 distinct articles can be selected
+for 18 queries; the actual count may be smaller. No article content is acquired.
+Validate with `load_discovery()` before separately authorizing historical
+collection. Use another new output name with identical flags for offline replay.
+
+For the external-relation example, supply the generic JSONL above and an existing
+matching metadata cache (otherwise this command intentionally fails offline):
+
+```sh
+python -m llm_kbc.wikipedia_discovery \
+  --policy-version v2 --input-format generic \
+  --identities /path/to/external_queries.jsonl \
+  --output /path/to/new_external_discovery.jsonl \
+  --cache-dir /path/to/frozen_metadata_cache --candidate-limit 5
+```
+
+### Compatibility and temporal limits
+
+V1 schema, duplicate rules, strict identity loader, cache keys, selection defaults
+and reader validation remain intact. Regression tests validate an artifact
+generated with the actual original v1 source from commit
+`bd5202fb8f95345aeff4a18b7ec672767e3c0c2c`, plus offline 3/5/10 selection from
+identical cached responses. V1 creation with updated code records a different
+implementation hash; **old manifests are not claimed to regenerate byte-identically**.
+For original manifest bytes, use the original implementation revision and recorded
+environment in a separate checkout, with the frozen inputs/cache. Preserve the
+original artifacts instead of overwriting or relabeling them as v2.
+
+Discovery timestamps describe current-index/API acquisition, not the cutoff or
+factual validity. The configured cutoff is only an instruction for subsequent
+historical collection; it is never submitted as a historical search constraint.
+Actual collected revision timestamps do not exist in these metadata-only artifacts.
+Redirects, disambiguation, current title normalization and unverified identity
+retain v1 handling below. Neither more articles nor new relation support establishes
+retrieval effectiveness. Dynamic corpus assembly, dense/hybrid retrieval, ranking
+changes and context packing are separate future tasks. No live calls, real pilot
+expansion or article downloads were performed for RAG-04.3.
+
+## V1 fixed policy and temporal scope
 
 Policy `wikipedia-article-discovery-v1` uses BM25's existing identity loader and
 `subject-relation-lexical-v1` query templates. All other input fields, including

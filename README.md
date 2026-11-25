@@ -811,6 +811,15 @@ coverage surviving numeric controls motivates testing targeted discovery. These
 are proposed follow-up experiments, not evidence of RAVEC novelty or superiority.
 No archived 475-record audit has been executed in this local checkout.
 
+## Offline BM25 retrieval
+
+`python -m llm_kbc.bm25_retrieval --help` describes the CPU-only retriever over one
+validated Wikipedia passage snapshot. It produces deterministic ranked candidates
+and a provenance manifest using subject/relation identities only. See
+[BM25 retrieval](docs/bm25_retrieval.md) for the fixed scoring/tokenization policy,
+offline pilot command, artifact schema and temporal limitations. Context packing
+and RAG inference are separate future tasks; existing baselines are unchanged.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

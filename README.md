@@ -820,6 +820,12 @@ and a provenance manifest using subject/relation identities only. See
 offline pilot command, artifact schema and temporal limitations. Context packing
 and RAG inference are separate future tasks; existing baselines are unchanged.
 
+Wikipedia article candidates can be prepared separately with
+`python -m llm_kbc.wikipedia_discovery --help`. See
+[article discovery](docs/wikipedia_discovery.md) for the versioned direct/search
+policy, metadata-only cache replay, historical limitations, and proposed
+18-training-instance pilot. No live discovery pilot has been executed.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

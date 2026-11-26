@@ -853,6 +853,19 @@ examples, backend/duplicate rules, artifact-version validation and exact propose
 Aristotle expansion commands. These are article candidates, not final evidence
 contexts; no RAG inference or new live pilot is implemented by this stage.
 
+Validated discovery v1/v2 snapshots can feed the independent, CPU-only
+`python -m llm_kbc.rag_corpus_assembly --help` stage. It reuses verified historical
+articles/passages from an immutable shared store or explicit archived snapshots,
+collects missing revisions only when their cache or explicit network permission
+allows it, and composes standard corpus/passage artifacts with query associations
+and a final completion manifest. Execution defaults to offline and never overwrites
+outputs. See [dynamic corpus assembly](docs/rag_corpus_assembly.md) for cutoff
+revalidation, reuse/import rules, artifact validation and scratch-storage examples.
+Assembly v2 accounts for validated terminal evidence unavailability, explicit
+source exclusions and zero-passage documents, preserves distinct sources with
+identical text, and writes per-query evidence availability without dropping queries.
+No live assembly or article downloads were performed during implementation.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot

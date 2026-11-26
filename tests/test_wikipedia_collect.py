@@ -23,6 +23,78 @@ def payload(title="Synthetic article", page_id=1, revision=10, timestamp="2026-0
     }}
 
 
+@pytest.mark.parametrize("kind,reason", [("missing", "missing_page"), ("no_revision", "no_eligible_revision"),
+    ("empty", "empty_source"), ("unsupported", "unsupported_source")])
+def test_structured_outcome_is_opt_in_and_standalone_remains_incomplete(tmp_path, monkeypatch, kind, reason):
+    data = payload()
+    page = data["query"]["pages"][0]
+    if kind == "missing":
+        page.pop("revisions"); page["missing"] = True
+    elif kind == "no_revision":
+        page.pop("revisions")
+    elif kind == "empty":
+        page["revisions"][0]["slots"]["main"]["content"] = ""
+    else:
+        page["revisions"][0]["slots"]["main"]["contentmodel"] = "json"
+    kwargs = inputs(tmp_path, [{"page_id": 1}])
+    mock_api(monkeypatch, [data])
+    report = live({**kwargs, "cutoff": "2026-07-01T00:00:00Z"})
+    assert report["status"] == "incomplete" and report["records"][0]["status"] == "failed"
+    assert not kwargs["output_path"].exists()
+    snapshot, _ = wiki._snapshot("https://en.wikipedia.org/w/api.php",
+        wiki._params({"page_id": 1}, "2026-07-01T00:00:00Z"), kwargs["cache_dir"],
+        allow_network=False, user_agent=None, delay=1.0)
+    with pytest.raises(wiki.TerminalArticleOutcome) as outcome:
+        wiki.article_outcome(snapshot, {"page_id": 1}, "en", "2026-07-01T00:00:00Z")
+    assert outcome.value.reason == reason
+    assert outcome.value.status == ("unavailable" if kind in {"missing", "no_revision"} else "excluded")
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_structured_revision_continuation_live_cache_and_offline_replay(tmp_path, monkeypatch, empty):
+    data = payload()
+    data["continue"] = {"continue": "||", "rvcontinue": "20260630120000|10"}
+    if empty:
+        data["query"]["pages"][0]["revisions"] = []
+    kwargs = inputs(tmp_path, [{"page_id": 1}])
+    calls = mock_api(monkeypatch, [data])
+    cutoff = "2026-07-01T00:00:00Z"
+    report = live({**kwargs, "cutoff": cutoff})
+    # Existing standalone behavior is intentionally unchanged in both cases.
+    assert report["status"] == ("incomplete" if empty else "complete")
+    assert len(calls) == 1
+    frozen = {p: p.read_bytes() for p in kwargs["cache_dir"].iterdir()}
+    monkeypatch.setattr(wiki, "urlopen", lambda *a, **k: pytest.fail("Offline replay made HTTP request"))
+    for _ in range(2):
+        snapshot, _ = wiki._snapshot("https://en.wikipedia.org/w/api.php",
+            wiki._params({"page_id": 1}, cutoff), kwargs["cache_dir"],
+            allow_network=False, user_agent=None, delay=1.0)
+        if empty:
+            with pytest.raises(wiki.CollectionError, match="unresolved continuation") as error:
+                wiki.article_outcome(snapshot, {"page_id": 1}, "en", cutoff)
+            assert not isinstance(error.value, wiki.TerminalArticleOutcome)
+        else:
+            assert wiki.article_outcome(snapshot, {"page_id": 1}, "en", cutoff).revision_id == "10"
+    assert all(p.read_bytes() == raw for p, raw in frozen.items())
+
+
+@pytest.mark.parametrize("continuation", [None, True, [], "token", {}, {"continue": "||"},
+    {"rvcontinue": "token"}, {"continue": "||", "rvcontinue": None},
+    {"continue": "||", "rvcontinue": 10}, {"continue": True, "rvcontinue": "token"},
+    {"continue": "||", "rvcontinue": " "}, {"continue": "||", "rvcontinue": "bad\x00token"},
+    {"continue": "||", "rvcontinue": "bad\nvalue"}, {"continue": "||", "rvcontinue": "\ud800"},
+    {"continue": "||", "rvcontinue": "token", "othercontinue": "unsupported"}])
+def test_malformed_continuation_is_not_a_terminal_outcome(continuation):
+    data = payload()
+    data["query"]["pages"][0]["revisions"] = []
+    data["continue"] = continuation
+    # ASCII JSON escaping also allows testing invalid Unicode in a server token.
+    snapshot = {"response_body": json.dumps(data)}
+    with pytest.raises(wiki.CollectionError, match="Malformed revision continuation") as error:
+        wiki.article_outcome(snapshot, {"page_id": 1}, "en", "2026-07-01T00:00:00Z")
+    assert not isinstance(error.value, wiki.TerminalArticleOutcome)
+
+
 @pytest.fixture(autouse=True)
 def forbid_network(monkeypatch):
     def forbidden(*args, **kwargs):

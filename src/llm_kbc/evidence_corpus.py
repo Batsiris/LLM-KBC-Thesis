@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 
 SCHEMA_VERSION = "evidence-corpus-v1"
+ASSEMBLY_DUPLICATE_POLICY = "preserve-distinct-sources-identical-text-assembly-v1"
 EXTERNAL_SOURCES = frozenset({
     "encyclopedia", "official_website", "news", "research_publication", "other_external",
 })
@@ -151,7 +152,9 @@ def _invalid_constant(value: str):
     raise CorpusError(f"nonstandard JSON constant: {value}")
 
 
-def _documents(content: bytes, location: str) -> list[EvidenceDocument]:
+def _documents(content: bytes, location: str, *, allow_duplicate_content=False) -> list[EvidenceDocument]:
+    if type(allow_duplicate_content) is not bool:
+        raise CorpusError("allow_duplicate_content must be boolean")
     documents, ids, hashes = [], {}, {}
     try:
         text = content.decode("utf-8")
@@ -170,6 +173,8 @@ def _documents(content: bytes, location: str) -> list[EvidenceDocument]:
         document = validate_document(value, location=where)
         for key, seen, label in ((document.doc_id, ids, "doc_id"),
                                  (document.content_sha256, hashes, "content")):
+            if label == "content" and allow_duplicate_content:
+                continue
             if key in seen:
                 raise CorpusError(f"{where}: duplicate {label} (first at line {seen[key]}); curate explicitly, never silently deduplicate")
             seen[key] = index

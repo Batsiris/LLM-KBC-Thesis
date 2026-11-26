@@ -36,6 +36,127 @@ class NetworkFailure(CollectionError):
         self.details = details or {}
 
 
+class TerminalArticleOutcome(CollectionError):
+    """Validated evidence absence/exclusion; never a transport or integrity failure.
+
+    Only article_outcome() raises this. The standalone collector retains its
+    existing all-or-nothing behavior and does not use this opt-in classifier.
+    """
+
+    def __init__(self, status, reason):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+def article_outcome(snapshot, request, language, cutoff):
+    """Classify a validated revision response, without guessing from error text.
+
+    Callers must first validate the immutable envelope using _snapshot(). Missing
+    fields are errors, except absent revisions (MediaWiki's no-revision outcome).
+    Current redirects are not accepted as historical identity mappings.
+    """
+    payload = _json_object(snapshot["response_body"], "API response")
+    if "error" in payload or "warnings" in payload:
+        raise CollectionError("API errors/warnings are not terminal evidence outcomes")
+    continuation = payload.get("continue")
+    if "continue" in payload:
+        # This request paginates revisions only. Tokens are opaque, not dates or
+        # evidence of absence. Do not follow them or change standalone collection.
+        if (not isinstance(continuation, dict) or set(continuation) != {"continue", "rvcontinue"}
+                or any(not isinstance(v, str) or not v.strip()
+                    or any(ord(c) < 32 or ord(c) == 127 for c in v) for v in continuation.values())):
+            raise CollectionError("Malformed revision continuation metadata")
+        try:
+            for token in continuation.values():
+                token.encode("utf-8")
+        except UnicodeError as error:
+            raise CollectionError("Malformed revision continuation token") from error
+    try:
+        query = payload["query"]
+        pages = query["pages"]
+        if not isinstance(pages, list) or len(pages) != 1 or not isinstance(pages[0], dict):
+            raise CollectionError("Require exactly one page outcome")
+        page = pages[0]
+        for flag in ("missing", "invalid", "redirect"):
+            if flag in page and page[flag] is not True:
+                raise CollectionError(f"Malformed formatversion-2 {flag} flag")
+        if "invalid" in page:
+            raise CollectionError("Invalid page request is not verified evidence absence")
+        for key in ("normalized", "redirects"):
+            chain = query.get(key, [])
+            if not isinstance(chain, list) or any(not isinstance(m, dict)
+                    or any(not isinstance(m.get(k), str) or not m[k].strip() for k in ("from", "to")) for m in chain):
+                raise CollectionError("Malformed page mapping")
+        if query.get("redirects") or "redirect" in page:
+            raise CollectionError("Historical identity unresolved; no current redirect substitution")
+        rights = query["rightsinfo"]
+        if not isinstance(rights, dict) or any(not isinstance(rights.get(k), str)
+                or not rights[k].strip() for k in ("text", "url")):
+            raise CollectionError("Missing site-wide license attribution")
+        if "page_id" in request:
+            if _positive_id(page["pageid"], "page ID") != request["page_id"]:
+                raise CollectionError("Page outcome identity mismatch")
+        else:
+            title = request["title"]
+            for mapping in query.get("normalized", []):
+                if title == mapping["from"]:
+                    title = mapping["to"]
+            if page.get("title") != title:
+                raise CollectionError("Page outcome title mismatch")
+        if "missing" in page:
+            if continuation is not None:
+                raise CollectionError("Missing page with unresolved revision continuation is incomplete")
+            if ("revisions" in page or "invalid" in page or "pageprops" in page
+                    or ("ns" in page and (type(page["ns"]) is not int or page["ns"] != 0))):
+                raise CollectionError("Contradictory missing-page metadata")
+            if "title" in page:
+                corpus._string(page["title"], "title", "Missing page")
+            if "title" in request and "ns" not in page:
+                raise CollectionError("Missing title outcome requires a namespace")
+            raise TerminalArticleOutcome("unavailable", "missing_page")
+        _positive_id(page["pageid"], "page ID")
+        title = corpus._string(page["title"], "title", "API")
+        if corpus._BENCHMARK_MARKER.search(title.casefold()):
+            raise CollectionError("Benchmark/thesis titles are excluded")
+        if type(page["ns"]) is not int or page["ns"] != 0 or page["pagelanguage"] != language:
+            raise CollectionError("Invalid article namespace/language")
+        properties = page.get("pageprops", {})
+        if not isinstance(properties, dict) or any(not isinstance(v, str) for v in properties.values()):
+            raise CollectionError("Malformed page properties")
+        revisions = page.get("revisions", [])
+        if not isinstance(revisions, list) or len(revisions) > 1:
+            raise CollectionError("Malformed revision result")
+        if not revisions:
+            if continuation is not None:
+                raise CollectionError("Empty revision result with unresolved continuation is incomplete")
+            raise TerminalArticleOutcome("unavailable", "no_eligible_revision")
+        revision = revisions[0]
+        _positive_id(revision["revid"], "revision ID")
+        if cutoff is not None and _timestamp(revision["timestamp"]) > _timestamp(cutoff):
+            raise CollectionError("Returned revision is newer than cutoff")
+        _timestamp(revision["timestamp"])
+        slot = revision["slots"]["main"]
+        if not isinstance(slot, dict) or any(not isinstance(slot.get(k), str)
+                or not slot[k].strip() for k in ("contentmodel", "contentformat")):
+            raise CollectionError("Incomplete revision content metadata")
+        text = slot["content"]
+        if not isinstance(text, str):
+            raise CollectionError("Revision source must be a string")
+        text.encode("utf-8")
+        if "\x00" in text:
+            raise CollectionError("Invalid NUL in revision source")
+        if slot["contentmodel"] != "wikitext" or slot["contentformat"] != "text/x-wiki":
+            raise TerminalArticleOutcome("excluded", "unsupported_source")
+        if not text.strip():
+            raise TerminalArticleOutcome("excluded", "empty_source")
+        if "disambiguation" in properties or "__DISAMBIG__" in text or text.lstrip().startswith("#"):
+            raise TerminalArticleOutcome("excluded", "ambiguous_or_directive_source")
+    except (KeyError, TypeError, AttributeError, IndexError, UnicodeError) as error:
+        raise CollectionError(f"Malformed or incomplete article outcome: {error}") from error
+    return _document(snapshot, request, language, cutoff, {})
+
+
 def _json_object(content: str | bytes, location: str) -> dict:
     try:
         value = json.loads(content, object_pairs_hook=corpus._unique_keys,

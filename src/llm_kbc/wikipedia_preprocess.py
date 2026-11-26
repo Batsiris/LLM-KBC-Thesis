@@ -41,11 +41,14 @@ def _parser():
     return mwparserfromhell
 
 
-def load_snapshot(corpus_path, manifest_path=None, collection_path=None, cache_dir=None):
+def load_snapshot(corpus_path, manifest_path=None, collection_path=None, cache_dir=None, *,
+                  allow_duplicate_content=False):
     """Check all three artifacts and optionally their immutable API caches.
 
     Returns documents, acquisition metadata by document ID and input fingerprints.
     Paths do not enter fingerprints, so relocation does not change derived output.
+    Duplicate text is rejected by default. Explicit opt-in is restricted to the
+    versioned assembly corpus marker; full assembly validation owns its semantics.
     """
     path = Path(corpus_path)
     paths = {"corpus": path, "manifest": Path(manifest_path or str(path) + ".manifest.json"),
@@ -53,7 +56,11 @@ def load_snapshot(corpus_path, manifest_path=None, collection_path=None, cache_d
     content = {key: corpus._input_bytes(value) for key, value in paths.items()}
     manifest = acquisition._json_object(content["manifest"], str(paths["manifest"]))
     collection = acquisition._json_object(content["collection"], str(paths["collection"]))
-    documents = corpus._documents(content["corpus"], str(path))
+    if allow_duplicate_content and (manifest.get("duplicate_policy") != corpus.ASSEMBLY_DUPLICATE_POLICY
+            or manifest.get("artifact_role") != "assembled_historical_corpus"
+            or manifest.get("assembly_policy") != "rag-corpus-assembly-v2"):
+        raise PreprocessingError("Duplicate-content opt-in requires a supported assembly corpus")
+    documents = corpus._documents(content["corpus"], str(path), allow_duplicate_content=allow_duplicate_content)
     expected = [{k: v for k, v in asdict(document).items() if k != "text"} for document in documents]
     count = len(documents)
     if (manifest.get("schema_version") != corpus.SCHEMA_VERSION

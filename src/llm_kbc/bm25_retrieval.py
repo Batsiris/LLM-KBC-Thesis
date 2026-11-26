@@ -81,12 +81,15 @@ def _hash(value: object) -> bool:
 
 
 def load_passages(passages_path: str | Path, corpus_path: str | Path, *,
-                  manifest_path=None, corpus_manifest=None, collection_path=None, cache_dir=None):
+                  manifest_path=None, corpus_manifest=None, collection_path=None, cache_dir=None,
+                  allow_duplicate_content=False):
     """Validate the existing passage schema and its linked, complete source snapshot.
 
     Diagnostics are required at <passages>.diagnostics.jsonl. Optional original API
     caches are reverified when supplied; archived 'verified' is not a fresh audit.
     No wikitext parser, template expansion or network access is invoked.
+    allow_duplicate_content is an explicit opt-in for supported assembly corpora;
+    it does not alter scoring, tokenization or standalone retrieval defaults.
     """
     path = Path(passages_path)
     manifest_path = Path(manifest_path or str(path) + ".manifest.json")
@@ -97,7 +100,8 @@ def load_passages(passages_path: str | Path, corpus_path: str | Path, *,
              "collection": Path(collection_path or str(source_path) + ".collection.json")}
     original = {key: corpus._input_bytes(p) for key, p in paths.items()}
     documents, acquisition, fingerprints = preprocessing.load_snapshot(
-        source_path, corpus_manifest, collection_path, cache_dir)
+        source_path, corpus_manifest, collection_path, cache_dir,
+        allow_duplicate_content=allow_duplicate_content)
     for key in fingerprints:
         if key.startswith("cache:"):
             paths[key] = Path(cache_dir) / (key.removeprefix("cache:") + ".json")

@@ -866,6 +866,15 @@ source exclusions and zero-passage documents, preserves distinct sources with
 identical text, and writes per-query evidence availability without dropping queries.
 No live assembly or article downloads were performed during implementation.
 
+Completed assemblies can feed CPU-only, query-specific BM25 via
+`python -m llm_kbc.rag_retrieval --help`. Each query uses only its validated eligible
+passages and local BM25 statistics; no global corpus statistics or model calls are
+used. Ranked candidates retain source provenance, explicit empty/no-hit outcomes,
+pool fingerprints and a verifiable completion manifest. See
+[query-specific RAG retrieval](docs/rag_retrieval.md) for the API, artifact contract
+and proposed offline Aristotle pilot commands. These are ranked passages, not
+packed generation contexts; no real assembly retrieval pilot was run locally.
+
 ## Current status
 
 The project scaffold, dataset inspector, official evaluation adapter, zero-shot
